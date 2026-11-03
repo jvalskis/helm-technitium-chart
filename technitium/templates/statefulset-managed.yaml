@@ -1,0 +1,83 @@
+{{/*
+MIT License
+
+Copyright (c) 2026 Shane & Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+*/}}
+{{- if eq (include "technitium.managedEnabled" .) "true" -}}
+{{- $deployment := include "technitium.primaryDeployment" . | fromYaml -}}
+{{- $pod := deepCopy $deployment.spec.template -}}
+{{- $_ := set $pod.metadata.labels "app.kubernetes.io/component" "cluster-member" -}}
+{{- if $pod.metadata.annotations -}}
+{{- $_ := unset $pod.metadata.annotations "checksum/bootstrap" -}}
+{{- end -}}
+{{- $containers := list -}}
+{{- range $container := $pod.spec.containers -}}
+  {{- if eq $container.name "technitium-dns-server" -}}
+    {{- $env := list (dict "name" "POD_NAME" "valueFrom" (dict "fieldRef" (dict "fieldPath" "metadata.name"))) -}}
+    {{- range $item := $container.env -}}
+      {{- if eq $item.name "DNS_SERVER_DOMAIN" -}}
+        {{- $item = dict "name" "DNS_SERVER_DOMAIN" "value" (printf "$(POD_NAME).%s" $.Values.cluster.domain) -}}
+      {{- end -}}
+      {{- $env = append $env $item -}}
+    {{- end -}}
+    {{- $_ := set $container "env" $env -}}
+    {{- $containers = append $containers $container -}}
+  {{- end -}}
+{{- end -}}
+{{- $_ := set $pod.spec "containers" $containers -}}
+{{- $volumes := list -}}
+{{- range $volume := $pod.spec.volumes -}}
+  {{- if eq $volume.name "logs" -}}{{- $volumes = append $volumes $volume -}}{{- end -}}
+{{- end -}}
+{{- $_ := set $pod.spec "volumes" $volumes -}}
+{{- $p := .Values.persistence | default dict -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "technitium.managedMemberName" . }}
+  labels:
+    {{- include "technitium.labels" . | nindent 4 }}
+spec:
+  replicas: {{ add 1 (int .Values.cluster.managed.secondaries) }}
+  serviceName: {{ include "technitium.managedMemberName" . }}-headless
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "technitium.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: cluster-member
+  template:
+    {{- toYaml $pod | nindent 4 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: config-storage
+        labels:
+          {{- include "technitium.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml ($p.accessModes | default (list "ReadWriteOnce")) | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ $p.size | default "2Gi" }}
+        {{- with $p.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+{{- end }}

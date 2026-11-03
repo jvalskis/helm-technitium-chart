@@ -39,6 +39,10 @@ spec:
   type: {{ .Values.service.web.type | default "ClusterIP" }}
   selector:
     {{- include "technitium.selectorLabels" . | nindent 4 }}
+    {{- if eq (include "technitium.managedEnabled" .) "true" }}
+    app.kubernetes.io/component: cluster-member
+    statefulset.kubernetes.io/pod-name: {{ include "technitium.managedMemberName" . }}-0
+    {{- end }}
   ports:
     - name: web-ui-http
       port: {{ .Values.ports.webHttp | default 5380 }}
@@ -63,10 +67,9 @@ spec:
       protocol: TCP
     {{- end }}
     {{- if .Values.cluster.enabled }}
-    # Cluster mode (issue #3): this Service's ClusterIP is the node address
-    # registered with Technitium, so peers send the HTTPS API, NOTIFY and
-    # AXFR/IXFR here. Replies to peers leave from the pod IP, which the
-    # cluster.podNetworks settings allow.
+    # Independent-release mode registers this Service's ClusterIP as its node
+    # address. Managed mode registers each member's dedicated -web Service.
+    # Replies to peers leave from pod IPs allowed by cluster.podNetworks.
     - name: dns-udp
       port: 53
       targetPort: dns-udp
@@ -98,6 +101,9 @@ spec:
   {{- end }}
   selector:
     {{- include "technitium.selectorLabels" . | nindent 4 }}
+    {{- if eq (include "technitium.managedEnabled" .) "true" }}
+    app.kubernetes.io/component: cluster-member
+    {{- end }}
   ports:
     - name: dns-udp
       port: 53

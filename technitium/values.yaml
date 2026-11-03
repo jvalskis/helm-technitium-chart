@@ -87,17 +87,14 @@ image:
 # Deployment update strategy. Recreate is REQUIRED and enforced at render time:
 # any other value fails `helm template`/`install` with a clear error.
 #
-# Technitium keeps its config and zone data on a single ReadWriteOnce PVC, which
-# Kubernetes will not mount on two pods at once. With RollingUpdate, Kubernetes
-# tries to start the new pod before the old one releases the volume, so the
-# rollout deadlocks (new pod stuck Pending). Recreate terminates the old pod
-# first, then starts the new one -- a brief DNS outage during the swap, but no
-# deadlock. It is the only safe option on a ReadWriteOnce volume.
+# Technitium keeps its config and zone data on one ReadWriteOnce PVC. With a
+# Deployment RollingUpdate, the new Pod may start before the old Pod releases
+# that claim, leaving the rollout stuck. Recreate stops the old Pod first.
 #
-# For high availability without an update outage, run Technitium in cluster mode
-# (see `cluster` below): separate releases, each with its own instance, volume,
-# and external IP, where a secondary syncs zones from the primary, so one node
-# stays live while another restarts.
+# For high availability, use independent releases or managed clustering (see
+# `cluster` below). Each managed member has its own claim. Its StatefulSet
+# uses RollingUpdate to restart members one at a time, highest ordinal first.
+# updateStrategy below applies only to the standalone Deployment.
 updateStrategy:
   type: Recreate
 
@@ -293,13 +290,29 @@ bootstrap:
 # in the same namespace) participate in a single Technitium cluster managed
 # from one admin web console. See README.md "Clustering" for the full workflow.
 #
-# Each release is one node, registered with Technitium at its `-web` Service
-# ClusterIP, which does not change when the pod restarts. With autoJoin (the
-# default) the chart initializes and joins the cluster for you; with it off,
-# NOTES.txt prints the manual steps. Clustering needs persistence.
+# In independent-release mode, each release is one node registered at its
+# `-web` Service ClusterIP. Managed mode places all members in one StatefulSet,
+# with per-member web Services and retained claims. Clustering needs persistence.
 cluster:
   # Toggle clustering mode for this release.
   enabled: false
+
+  # Opt-in native members in one StatefulSet. `secondaries` counts extra nodes,
+  # not total nodes. See docs/managed-clustering.md before enabling on an existing release.
+  managed:
+    enabled: false
+    # Explicitly permit cluster creation on a fresh Helm install only. Ignored
+    # on upgrades; an unclustered existing member requires operator recovery.
+    initialize: false
+    secondaries: 0
+    # Stable member selected by the primary Service. After manual
+    # promotion, set this to the promoted member's StatefulSet ordinal.
+    updateTargetOrdinal: 0
+    # Python provides strict JSON handling for the API and Kubernetes guard.
+    jobImage:
+      repository: python
+      tag: 3.12-alpine
+      pullPolicy: IfNotPresent
 
   # Shared cluster zone name. Must be identical on every node in the cluster.
   # The first node to be initialized will host this zone; secondaries discover

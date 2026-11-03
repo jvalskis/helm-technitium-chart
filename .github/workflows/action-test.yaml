@@ -82,6 +82,9 @@ jobs:
       - name: Chart unit tests
         run: helm unittest technitium
 
+      - name: Managed coordinator synthetic API tests
+        run: python3 -m unittest discover -s technitium/tests -p 'managed_scripts_test.py'
+
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
 

@@ -71,21 +71,62 @@ Expand the name of the chart.
 {{- end }}
 
 {{/*
-Create a default fully qualified app name.
-We truncate at 63 chars because some Kubernetes name fields are limited to this.
+Create a default fully qualified app name. Managed mode reserves room for
+member resource suffixes and hashes long names to avoid collisions.
 */}}
 {{- define "technitium.fullname" -}}
+{{- $raw := "" -}}
 {{- if .Values.fullnameOverride }}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- $raw = .Values.fullnameOverride -}}
 {{- else }}
 {{- $name := default .Chart.Name .Values.nameOverride }}
 {{- if contains $name .Release.Name }}
-{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- $raw = .Release.Name -}}
 {{- else }}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- $raw = printf "%s-%s" .Release.Name $name -}}
 {{- end }}
 {{- end }}
+{{- if and (.Values.cluster.managed | default dict).enabled (gt (len $raw) 44) -}}
+{{- printf "%s-%s" ($raw | trunc 35 | trimSuffix "-") ($raw | sha256sum | trunc 8) -}}
+{{- else -}}
+{{- $raw | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
 {{- end }}
+
+{{- define "technitium.managedEnabled" -}}
+{{- if (.Values.cluster.managed | default dict).enabled -}}true{{- end -}}
+{{- end -}}
+
+{{- define "technitium.managedValidate" -}}
+{{- $m := .Values.cluster.managed | default dict -}}
+{{- if and (not $m.enabled) .Release.IsUpgrade -}}
+{{- range (lookup "apps/v1" "StatefulSet" .Release.Namespace "").items -}}
+{{- if eq (index (.metadata.labels | default dict) "app.kubernetes.io/instance") $.Release.Name -}}
+{{- fail "managed clustering cannot be disabled while its StatefulSet exists; migrate members deliberately first" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $m.enabled -}}
+{{- if not .Values.cluster.enabled -}}{{ fail "cluster.enabled must be true when cluster.managed.enabled is true" }}{{- end -}}
+{{- if not .Values.cluster.autoJoin -}}{{ fail "cluster.autoJoin must be true when cluster.managed.enabled is true" }}{{- end -}}
+{{- if and .Values.bootstrap.enabled (or .Values.bootstrap.zones .Values.bootstrap.reverseZones) -}}{{ fail "bootstrap zones are not supported in managed mode; enroll zones after the cluster is verified" }}{{- end -}}
+{{- if .Values.cluster.primaryReleaseName -}}{{ fail "cluster.primaryReleaseName is incompatible with cluster.managed.enabled" }}{{- end -}}
+{{- if ne (include "technitium.persistenceEnabled" .) "true" -}}{{ fail "cluster.managed requires persistence.enabled=true" }}{{- end -}}
+{{- if (.Values.persistence | default dict).existingClaim -}}{{ fail "cluster.managed cannot use persistence.existingClaim; each StatefulSet member needs its own claim" }}{{- end -}}
+{{- if not (regexMatch "^[0-9]$" (toString $m.secondaries)) -}}{{ fail "cluster.managed.secondaries must be an integer from 0 to 9" }}{{- end -}}
+{{- $target := $m.updateTargetOrdinal | toString -}}
+{{- if or (not (regexMatch "^[0-9]$" $target)) (gt (int $target) (int $m.secondaries)) -}}{{ fail "cluster.managed.updateTargetOrdinal must be an existing member ordinal" }}{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "technitium.managedMemberName" -}}
+{{- printf "%s-cluster" (include "technitium.fullname" .) -}}
+{{- end -}}
+
+{{- define "technitium.managedHookName" -}}
+{{- printf "technitium-managed-%s-%s" (.Release.Name | trunc 24 | trimSuffix "-") (printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 8) -}}
+{{- end -}}
+
 
 {{/*
 Create chart name and version as used by the chart label.
@@ -127,7 +168,9 @@ sibling releases can be listed with:
 {{- if .Values.cluster.enabled }}
 {{- $domain := required "cluster.domain is required when cluster.enabled" .Values.cluster.domain }}
 technitium.io/cluster-domain: {{ $domain | replace "." "-" | trunc 63 | trimSuffix "-" | quote }}
+{{- if not (.Values.cluster.managed | default dict).enabled }}
 technitium.io/cluster-role: {{ ternary "secondary" "primary" (ne (.Values.cluster.primaryReleaseName | toString) "") | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -152,7 +195,7 @@ or "".
 {{- define "technitium.bootstrapEnabled" -}}
 {{- $b := .Values.bootstrap | default dict -}}
 {{- $secondary := and .Values.cluster.enabled (ne (.Values.cluster.primaryReleaseName | toString) "") -}}
-{{- if and $b.enabled (or $b.zones $b.reverseZones) (not $secondary) -}}
+{{- if and $b.enabled (or $b.zones $b.reverseZones) (not $secondary) (ne (include "technitium.managedEnabled" .) "true") -}}
 true
 {{- end -}}
 {{- end }}

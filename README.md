@@ -220,6 +220,13 @@ kubectl get secret my-dns-admin -n technitium -o jsonpath="{.data.password}" | b
 
 ## 🧩 Clustering
 
+For one Helm release with all members in a StatefulSet, see
+[Managed secondaries](docs/managed-clustering.md). The mode is opt-in and uses
+retained per-member storage, a guarded Helm hook, and an explicit primary route.
+New cluster creation requires `cluster.managed.initialize=true` on the first
+install. Upgrades only verify membership and join new members. No separate
+cluster progress record is maintained.
+
 Two (or more) Helm releases of this chart can join a single Technitium cluster — typically deployed side-by-side in the same namespace. Each release stays an independent Pod + PVC + Service; clustering simply lets them share settings, allow/block lists, DNS apps, users, permissions, and DNSSEC keys.
 
 ### How it works

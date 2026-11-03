@@ -1,0 +1,188 @@
+# MIT License
+#
+# Copyright (c) 2026 Shane & Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+suite: managed cluster workload
+templates:
+  - deployment.yaml
+  - pvc.yaml
+  - statefulset-managed.yaml
+  - job-cluster.yaml
+values:
+  - ../ci/cluster-managed.yaml
+release:
+  name: dns
+  namespace: test
+tests:
+  - it: replaces the Deployment with one StatefulSet in managed mode
+    template: deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: does not mount the independent Deployment claim
+    template: pvc.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: gives all three members independent claims and stable pod identity
+    template: statefulset-managed.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: dns-technitium-cluster
+      - equal:
+          path: spec.replicas
+          value: 3
+      - equal:
+          path: spec.podManagementPolicy
+          value: OrderedReady
+      - equal:
+          path: spec.updateStrategy.type
+          value: RollingUpdate
+      - equal:
+          path: spec.volumeClaimTemplates[0].metadata.name
+          value: config-storage
+      - notExists:
+          path: spec.template.spec.volumes[?(@.name == 'config-storage')]
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_SERVER_DOMAIN
+            value: $(POD_NAME).cluster.example.test
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.tcpSocket.port
+          value: dns-tcp
+
+  - it: keeps ordinal zero when secondary count is zero
+    template: statefulset-managed.yaml
+    set:
+      cluster.managed.secondaries: 0
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+
+  - it: leaves the independent release hook absent in managed mode
+    template: job-cluster.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: rejects independent-secondary and managed mode together
+    template: deployment.yaml
+    set:
+      cluster.primaryReleaseName: other
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.primaryReleaseName is incompatible with cluster.managed.enabled
+
+  - it: requires cluster mode
+    template: deployment.yaml
+    set:
+      cluster.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.enabled must be true when cluster.managed.enabled is true
+
+  - it: requires native auto-join hooks
+    template: deployment.yaml
+    set:
+      cluster.autoJoin: false
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.autoJoin must be true when cluster.managed.enabled is true
+
+  - it: rejects ephemeral storage
+    template: deployment.yaml
+    set:
+      persistence.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed requires persistence.enabled=true
+
+  - it: rejects a single existing claim for the entire StatefulSet
+    template: deployment.yaml
+    set:
+      persistence.existingClaim: legacy-pvc
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed cannot use persistence.existingClaim; each StatefulSet member needs its own claim
+
+  - it: rejects fractional and excessive counts
+    template: deployment.yaml
+    set:
+      cluster.managed.secondaries: 2.5
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed.secondaries must be an integer from 0 to 9
+
+  - it: rejects more than nine secondaries
+    template: deployment.yaml
+    set:
+      cluster.managed.secondaries: 10
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed.secondaries must be an integer from 0 to 9
+
+  - it: rejects static zone bootstrap after promotion could change roles
+    template: deployment.yaml
+    set:
+      bootstrap.enabled: true
+      bootstrap.zones:
+        - example.test
+    asserts:
+      - failedTemplate:
+          errorMessage: bootstrap zones are not supported in managed mode; enroll zones after the cluster is verified
+
+  - it: rejects an update target without a member
+    template: deployment.yaml
+    set:
+      cluster.managed.updateTargetOrdinal: 3
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed.updateTargetOrdinal must be an existing member ordinal
+
+  - it: refuses to disable managed mode even if the requested name changes
+    template: deployment.yaml
+    release:
+      upgrade: true
+    set:
+      cluster.managed.enabled: false
+      fullnameOverride: changed-name
+    kubernetesProvider:
+      scheme:
+        "apps/v1/StatefulSet":
+          gvr:
+            group: apps
+            version: v1
+            resource: statefulsets
+          namespaced: true
+      objects:
+        - apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: dns-technitium-cluster
+            namespace: test
+            labels:
+              app.kubernetes.io/instance: dns
+    asserts:
+      - failedTemplate:
+          errorMessage: managed clustering cannot be disabled while its StatefulSet exists; migrate members deliberately first

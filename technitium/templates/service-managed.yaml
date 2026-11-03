@@ -1,0 +1,101 @@
+{{/*
+MIT License
+
+Copyright (c) 2026 Shane & Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+*/}}
+{{- if eq (include "technitium.managedEnabled" .) "true" -}}
+{{- $base := include "technitium.managedMemberName" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $base }}-headless
+  labels:
+    {{- include "technitium.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "technitium.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: cluster-member
+  ports:
+    - name: web-ui-https
+      port: {{ .Values.ports.webHttps | default 53443 }}
+      targetPort: web-ui-https
+      protocol: TCP
+{{- range $i := until (int (add 1 (int .Values.cluster.managed.secondaries))) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $base }}-{{ $i }}-web
+  labels:
+    {{- include "technitium.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: peer-web
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "technitium.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: cluster-member
+    statefulset.kubernetes.io/pod-name: {{ $base }}-{{ $i }}
+  ports:
+    - name: web-ui-http
+      port: {{ $.Values.ports.webHttp | default 5380 }}
+      targetPort: web-ui-http
+      protocol: TCP
+    - name: web-ui-https
+      port: {{ $.Values.ports.webHttps | default 53443 }}
+      targetPort: web-ui-https
+      protocol: TCP
+    - name: dns-udp
+      port: 53
+      targetPort: dns-udp
+      protocol: UDP
+    - name: dns-tcp
+      port: 53
+      targetPort: dns-tcp
+      protocol: TCP
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "technitium.fullname" . }}-primary
+  labels:
+    {{- include "technitium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "technitium.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: cluster-member
+    statefulset.kubernetes.io/pod-name: {{ $base }}-{{ .Values.cluster.managed.updateTargetOrdinal }}
+  ports:
+    - name: dns-udp
+      port: 53
+      targetPort: dns-udp
+      protocol: UDP
+    - name: dns-tcp
+      port: 53
+      targetPort: dns-tcp
+      protocol: TCP
+    - name: web-ui-https
+      port: {{ .Values.ports.webHttps | default 53443 }}
+      targetPort: web-ui-https
+      protocol: TCP
+{{- end }}

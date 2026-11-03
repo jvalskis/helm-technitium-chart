@@ -1,0 +1,212 @@
+{{/*
+MIT License
+
+Copyright (c) 2026 Shane & Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+*/}}
+{{- if eq (include "technitium.managedEnabled" .) "true" -}}
+{{- $name := include "technitium.managedHookName" . -}}
+{{- $image := .Values.cluster.managed.jobImage -}}
+{{- $networks := .Values.cluster.podNetworks | default list -}}
+{{- if kindIs "string" $networks -}}{{- $networks = splitList "," $networks -}}{{- end -}}
+{{- if not $networks -}}{{- fail "cluster.podNetworks is required for managed clustering" -}}{{- end -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-agent
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-30"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-agent
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-30"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-agent
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-30"
+    helm.sh/hook-delete-policy: before-hook-creation
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}-agent
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ $name }}-agent
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-scripts
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  guard.py: |
+    {{- .Files.Get "files/managed-guard.py" | nindent 4 }}
+  cluster.py: |
+    {{- .Files.Get "files/managed-cluster.py" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-guard
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: {{ $name }}-agent
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: guard
+          image: "{{ $image.repository }}:{{ $image.tag }}"
+          imagePullPolicy: {{ $image.pullPolicy | default "IfNotPresent" }}
+          command: [python, /scripts/guard.py]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STATEFULSET_NAME
+              value: {{ include "technitium.managedMemberName" . | quote }}
+            - name: RELEASE_NAME
+              value: {{ .Release.Name | quote }}
+            - name: CLUSTER_DOMAIN
+              value: {{ .Values.cluster.domain | quote }}
+            - name: SECONDARIES
+              value: {{ .Values.cluster.managed.secondaries | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ $name }}-scripts
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-cluster
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cluster
+          image: "{{ $image.repository }}:{{ $image.tag }}"
+          imagePullPolicy: {{ $image.pullPolicy | default "IfNotPresent" }}
+          command: [python, /scripts/cluster.py]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ALLOW_INITIALIZE
+              value: {{ and .Release.IsInstall .Values.cluster.managed.initialize | quote }}
+            - name: SECONDARIES
+              value: {{ .Values.cluster.managed.secondaries | quote }}
+            - name: CLUSTER_DOMAIN
+              value: {{ required "cluster.domain is required for managed clustering" .Values.cluster.domain | quote }}
+            - name: BOOTSTRAP_MEMBER_DOMAIN
+              value: {{ printf "%s-0.%s" (include "technitium.managedMemberName" .) .Values.cluster.domain | quote }}
+            - name: BOOTSTRAP_MEMBER_SERVICE
+              value: {{ printf "%s-0-web" (include "technitium.managedMemberName" .) | quote }}
+            - name: MEMBER_BASE
+              value: {{ include "technitium.managedMemberName" . | quote }}
+            - name: ADMIN_USER
+              value: {{ .Values.cluster.adminUsername | default "admin" | quote }}
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "technitium.adminSecretName" . | quote }}
+                  key: {{ include "technitium.adminPasswordKey" . | quote }}
+            - name: PRIMARY_TOTP
+              value: {{ .Values.cluster.primaryNodeTotp | quote }}
+            - name: POD_NETWORKS
+              value: {{ $networks | join "," | nospace | quote }}
+            - name: HTTP_PORT
+              value: {{ .Values.ports.webHttp | default 5380 | quote }}
+            - name: HTTPS_PORT
+              value: {{ .Values.ports.webHttps | default 53443 | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ $name }}-scripts
+{{- end }}

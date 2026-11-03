@@ -20,6 +20,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */}}
+{{- define "technitium.primaryDeployment" -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -31,11 +32,11 @@ spec:
   # Recreate is mandatory: the config/zone data lives on a single ReadWriteOnce
   # PVC that cannot be mounted by two pods at once, so a RollingUpdate deadlocks
   # (the new pod stays Pending waiting for the volume). We reject any other
-  # strategy at render time rather than letting it deploy and hang. For
-  # multi-node high availability run separate releases in cluster mode.
+  # strategy at render time rather than letting it deploy and hang. Managed
+  # cluster mode uses a StatefulSet and does not render this Deployment.
   {{- $strategyType := (.Values.updateStrategy | default dict).type | default "Recreate" }}
-  {{- if ne $strategyType "Recreate" }}
-  {{- fail (printf "updateStrategy.type must be \"Recreate\" (got %q): Technitium uses a single ReadWriteOnce PVC, so a RollingUpdate deadlocks. For multi-node high availability, run separate releases in cluster mode." $strategyType) }}
+  {{- if and (ne $strategyType "Recreate") (ne (include "technitium.managedEnabled" .) "true") }}
+  {{- fail (printf "updateStrategy.type must be \"Recreate\" (got %q): Technitium uses a single ReadWriteOnce PVC, so a RollingUpdate deadlocks. For multi-node high availability, use managed clustering or separate releases." $strategyType) }}
   {{- end }}
   strategy:
     type: Recreate
@@ -306,3 +307,8 @@ spec:
           {{- end }}
         - name: logs
           emptyDir: {}
+{{- end -}}
+{{- include "technitium.managedValidate" . -}}
+{{- if ne (include "technitium.managedEnabled" .) "true" -}}
+{{ include "technitium.primaryDeployment" . }}
+{{- end -}}
