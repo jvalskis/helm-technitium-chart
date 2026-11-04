@@ -1,0 +1,140 @@
+# MIT License
+#
+# Copyright (c) 2026 Shane & Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+suite: managed primary observer
+templates:
+  - managed-primary-controller.yaml
+values:
+  - ../ci/cluster-managed.yaml
+release:
+  name: dns
+  namespace: test
+tests:
+  - it: creates a single observer with Recreate upgrades
+    documentIndex: 4
+    asserts:
+      - equal:
+          path: metadata.name
+          value: dns-technitium-primary-observer
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: dns-technitium-primary-observer
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'credentials')].secret.secretName
+          value: dns-technitium-admin
+
+  - it: limits Kubernetes writes to the named member Pods and Lease
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: [pods]
+              resourceNames:
+                - dns-technitium-cluster-0
+                - dns-technitium-cluster-1
+                - dns-technitium-cluster-2
+              verbs: [get, patch]
+            - apiGroups: [coordination.k8s.io]
+              resources: [leases]
+              resourceNames: [dns-technitium-primary-observer]
+              verbs: [get, patch]
+
+  - it: accepts a dedicated observer credential
+    documentIndex: 4
+    set:
+      cluster.managed.roleObserver.secretName: observer-secret
+      cluster.managed.roleObserver.passwordKey: observer-password
+      cluster.managed.roleObserver.username: observer
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'credentials')].secret.secretName
+          value: observer-secret
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OBSERVER_USER
+            value: observer
+
+  - it: rejects a poll interval below five seconds
+    set:
+      cluster.managed.roleObserver.pollSeconds: 3
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed.roleObserver.pollSeconds must be an integer from 5 to 300
+
+  - it: rejects a zero poll interval
+    set:
+      cluster.managed.roleObserver.pollSeconds: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed.roleObserver.pollSeconds must be an integer from 5 to 300
+
+  - it: creates no controller outside managed mode
+    set:
+      cluster.managed.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: leaves Lease state owned by the observer
+    documentIndex: 5
+    asserts:
+      - isKind:
+          of: Lease
+      - equal:
+          path: metadata.name
+          value: dns-technitium-primary-observer
+      - notExists:
+          path: spec
+
+  - it: mounts a dedicated API token without password login
+    documentIndex: 4
+    set:
+      cluster.managed.roleObserver.secretName: observer-token
+      cluster.managed.roleObserver.tokenKey: api-token
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TOKEN_FILE
+            value: /credentials/credential
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PASSWORD_FILE
+            value: /credentials/credential
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'credentials')].secret.items[0].key
+          value: api-token
+
+  - it: requires an explicit Secret when token authentication is selected
+    set:
+      cluster.managed.roleObserver.tokenKey: api-token
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed.roleObserver.tokenKey requires roleObserver.secretName

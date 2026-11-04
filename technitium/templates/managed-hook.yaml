@@ -74,6 +74,8 @@ metadata:
     helm.sh/hook-weight: "-20"
     helm.sh/hook-delete-policy: before-hook-creation
 data:
+  managed_api.py: |
+    {{- .Files.Get "files/managed_api.py" | nindent 4 }}
   guard.py: |
     {{- .Files.Get "files/managed-guard.py" | nindent 4 }}
   cluster.py: |
@@ -168,6 +170,7 @@ spec:
               drop: [ALL]
             readOnlyRootFilesystem: true
           env:
+            {{- include "technitium.managedTlsEnv" . | nindent 12 }}
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
             - name: NAMESPACE
@@ -197,11 +200,14 @@ spec:
               value: {{ .Values.cluster.primaryNodeTotp | quote }}
             - name: POD_NETWORKS
               value: {{ $networks | join "," | nospace | quote }}
+            - name: BOOTSTRAP_HTTP
+              value: {{ .Values.cluster.managed.bootstrapHttp | default false | quote }}
             - name: HTTP_PORT
               value: {{ .Values.ports.webHttp | default 5380 | quote }}
             - name: HTTPS_PORT
               value: {{ .Values.ports.webHttps | default 53443 | quote }}
           volumeMounts:
+            {{- include "technitium.managedCaMount" . | nindent 12 }}
             - name: scripts
               mountPath: /scripts
               readOnly: true
@@ -209,4 +215,5 @@ spec:
         - name: scripts
           configMap:
             name: {{ $name }}-scripts
+        {{- include "technitium.managedCaVolume" . | nindent 8 }}
 {{- end }}

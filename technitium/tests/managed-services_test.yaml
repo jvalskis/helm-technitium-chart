@@ -96,7 +96,7 @@ tests:
             app.kubernetes.io/component: cluster-member
             statefulset.kubernetes.io/pod-name: dns-technitium-cluster-2
 
-  - it: routes the primary Service to ordinal zero by default
+  - it: selects the primary label managed by the observer on live Pods
     template: service-managed.yaml
     documentIndex: 4
     asserts:
@@ -109,18 +109,4 @@ tests:
             app.kubernetes.io/name: technitium
             app.kubernetes.io/instance: dns
             app.kubernetes.io/component: cluster-member
-            statefulset.kubernetes.io/pod-name: dns-technitium-cluster-0
-
-  - it: switches primary routing after a manual promotion
-    template: service-managed.yaml
-    documentIndex: 4
-    set:
-      cluster.managed.updateTargetOrdinal: 2
-    asserts:
-      - equal:
-          path: spec.selector
-          value:
-            app.kubernetes.io/name: technitium
-            app.kubernetes.io/instance: dns
-            app.kubernetes.io/component: cluster-member
-            statefulset.kubernetes.io/pod-name: dns-technitium-cluster-2
+            technitium.io/cluster-role: primary

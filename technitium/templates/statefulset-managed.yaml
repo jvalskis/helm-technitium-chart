@@ -38,6 +38,10 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
       {{- $env = append $env $item -}}
     {{- end -}}
     {{- $_ := set $container "env" $env -}}
+    {{- if ($.Values.cluster.managed.tls | default dict).caSecretName -}}
+      {{- $_ := set $container "env" (append $env (dict "name" "SSL_CERT_FILE" "value" "/peer-ca/ca.crt")) -}}
+      {{- $_ := set $container "volumeMounts" (concat $container.volumeMounts (include "technitium.managedCaMount" $ | fromYamlArray)) -}}
+    {{- end -}}
     {{- $containers = append $containers $container -}}
   {{- end -}}
 {{- end -}}
@@ -46,6 +50,7 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 {{- range $volume := $pod.spec.volumes -}}
   {{- if eq $volume.name "logs" -}}{{- $volumes = append $volumes $volume -}}{{- end -}}
 {{- end -}}
+{{- $volumes = concat $volumes (include "technitium.managedCaVolume" . | fromYamlArray) -}}
 {{- $_ := set $pod.spec "volumes" $volumes -}}
 {{- $p := .Values.persistence | default dict -}}
 apiVersion: apps/v1

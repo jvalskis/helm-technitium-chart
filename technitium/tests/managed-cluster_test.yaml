@@ -54,6 +54,8 @@ tests:
       - equal:
           path: spec.podManagementPolicy
           value: OrderedReady
+      - notExists:
+          path: spec.template.metadata.labels["technitium.io/cluster-role"]
       - equal:
           path: spec.updateStrategy.type
           value: RollingUpdate
@@ -152,13 +154,21 @@ tests:
       - failedTemplate:
           errorMessage: bootstrap zones are not supported in managed mode; enroll zones after the cluster is verified
 
-  - it: rejects an update target without a member
+  - it: rejects an ambiguous HTTP override
+    template: deployment.yaml
+    set:
+      cluster.managed.bootstrapHttp: "yes"
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed.bootstrapHttp must be a boolean
+
+  - it: rejects the removed manual primary target
     template: deployment.yaml
     set:
       cluster.managed.updateTargetOrdinal: 3
     asserts:
       - failedTemplate:
-          errorMessage: cluster.managed.updateTargetOrdinal must be an existing member ordinal
+          errorMessage: cluster.managed.updateTargetOrdinal was removed; the primary observer now selects the primary Service endpoint
 
   - it: refuses to disable managed mode even if the requested name changes
     template: deployment.yaml

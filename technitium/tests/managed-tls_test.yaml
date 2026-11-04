@@ -1,0 +1,141 @@
+# MIT License
+#
+# Copyright (c) 2026 Shane & Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+suite: managed TLS trust
+templates:
+  - managed-hook.yaml
+  - managed-primary-controller.yaml
+  - statefulset-managed.yaml
+  - deployment.yaml
+release:
+  name: dns
+  namespace: test
+tests:
+  - it: validates coordinator certificates by default
+    template: managed-hook.yaml
+    documentIndex: 5
+    set: &managed
+      cluster.enabled: true
+      cluster.managed.enabled: true
+      cluster.domain: cluster.example.test
+      cluster.podNetworks: [10.244.0.0/16]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VERIFY_TLS
+            value: "true"
+      - notExists:
+          path: spec.template.spec.volumes[?(@.name == 'managed-peer-ca')]
+
+  - it: validates observer certificates by default
+    template: managed-primary-controller.yaml
+    documentIndex: 4
+    set: *managed
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VERIFY_TLS
+            value: "true"
+
+  - it: mounts the specified CA key for the coordinator
+    template: managed-hook.yaml
+    documentIndex: 5
+    set: &withCa
+      <<: *managed
+      cluster.managed.tls.caSecretName: local-pki-ca
+      cluster.managed.tls.caKey: bundle.pem
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CA_FILE
+            value: /peer-ca/ca.crt
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: managed-peer-ca
+            mountPath: /peer-ca
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: managed-peer-ca
+            secret:
+              secretName: local-pki-ca
+              items:
+                - key: bundle.pem
+                  path: ca.crt
+
+  - it: mounts the same CA bundle for the observer
+    template: managed-primary-controller.yaml
+    documentIndex: 4
+    set: *withCa
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CA_FILE
+            value: /peer-ca/ca.crt
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'managed-peer-ca')].secret.secretName
+          value: local-pki-ca
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == 'managed-peer-ca')].mountPath
+          value: /peer-ca
+
+  - it: makes the CA available to native cluster joins
+    template: statefulset-managed.yaml
+    set: *withCa
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SSL_CERT_FILE
+            value: /peer-ca/ca.crt
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'managed-peer-ca')].secret.items[0].key
+          value: bundle.pem
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == 'managed-peer-ca')].mountPath
+          value: /peer-ca
+
+  - it: permits an explicit self-signed test override
+    template: managed-primary-controller.yaml
+    documentIndex: 4
+    set:
+      <<: *managed
+      cluster.managed.tls.verify: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VERIFY_TLS
+            value: "false"
+
+  - it: rejects a non-boolean verification setting
+    template: deployment.yaml
+    set:
+      <<: *managed
+      cluster.managed.tls.verify: "off"
+    asserts:
+      - failedTemplate:
+          errorMessage: cluster.managed.tls.verify must be a boolean

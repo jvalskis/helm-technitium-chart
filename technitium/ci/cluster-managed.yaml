@@ -30,7 +30,9 @@ cluster:
     enabled: true
     initialize: true
     secondaries: 2
-    updateTargetOrdinal: 0
+    # Disposable fixture uses Technitium-generated self-signed certificates.
+    tls:
+      verify: false
 service:
   dns:
     type: ClusterIP

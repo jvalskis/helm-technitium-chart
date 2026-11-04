@@ -74,3 +74,23 @@ tests:
           content:
             name: ALLOW_INITIALIZE
             value: "false"
+
+  - it: requires HTTPS for the coordinator by default
+    documentIndex: 5
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BOOTSTRAP_HTTP
+            value: "false"
+
+  - it: permits explicit HTTP access to a legacy bootstrap member
+    documentIndex: 5
+    set:
+      cluster.managed.bootstrapHttp: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BOOTSTRAP_HTTP
+            value: "true"

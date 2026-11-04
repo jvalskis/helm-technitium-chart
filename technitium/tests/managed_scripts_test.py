@@ -3,7 +3,6 @@
 
 """Synthetic API checks; no cluster, credentials or network calls are used."""
 
-import builtins
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import io
 import json
@@ -13,6 +12,7 @@ import runpy
 import socket
 import ssl
 import time
+import sys
 import unittest
 from unittest import mock
 import urllib.error
@@ -21,6 +21,9 @@ import urllib.request
 
 
 FILES = Path(__file__).resolve().parents[1] / "files"
+sys.path.insert(0, str(FILES))
+import managed_api
+
 
 
 class FakeResponse(io.BytesIO):
@@ -43,6 +46,9 @@ class FakeApis:
         self.token_reads = 0
         self.lost_responses = set()
         self.extra_nodes = []
+        self.expected_totp = ""
+        self.login_forms = []
+        self.join_forms = []
 
     def workload(self, replicas):
         return {
@@ -83,7 +89,7 @@ class FakeApis:
                 return self.ips[index]
         raise socket.gaierror(service)
 
-    def urlopen(self, req, context=None, timeout=None):
+    def urlopen(self, req, context=None, timeout=None, server_name=None):
         method = req.get_method()
         url = urllib.parse.urlparse(req.full_url)
         if url.path == "/apis/apps/v1/namespaces/test/statefulsets":
@@ -94,13 +100,36 @@ class FakeApis:
             self.calls.append((method, url.path, None))
             return FakeResponse({"items": self.workloads})
         index = self.ips.index(url.hostname)
+        assert server_name == self.names[index]
         path = url.path
         self.calls.append((method, path, index))
         if path == "/api/user/login":
+            assert method == "POST"
+            form = urllib.parse.parse_qs(req.data.decode())
+            self.login_forms.append(form)
+            assert form["user"] == ["admin"]
+            assert form["pass"] == ["synthetic-only"]
+            if self.expected_totp and form.get("totp") != [self.expected_totp]:
+                return FakeResponse({"status": "error"})
             return FakeResponse({"status": "ok", "token": "synthetic-token"})
+        assert req.get_header("Authorization") == "Bearer synthetic-token"
         if path == "/api/admin/cluster/state":
             return FakeResponse({"status": "ok", "response": self.cluster_state(index)})
         if path in ("/api/admin/cluster/init", "/api/admin/cluster/initJoin"):
+            assert method == "POST"
+            form = urllib.parse.parse_qs(req.data.decode())
+            if path.endswith("initJoin"):
+                self.join_forms.append(form)
+                assert form["secondaryNodeIpAddresses"] == [self.ips[index]]
+                assert form["primaryNodeIpAddress"] == [self.ips[self.current_primary]]
+                assert form["primaryNodeUrl"] == [f"https://{self.names[self.current_primary]}:53443/"]
+                assert form["primaryNodeUsername"] == ["admin"]
+                assert form["primaryNodePassword"] == ["synthetic-only"]
+                if self.expected_totp:
+                    assert form["primaryNodeTotp"] == [self.expected_totp]
+            else:
+                assert form["clusterDomain"] == ["cluster.example.test"]
+                assert form["primaryNodeIpAddresses"] == [self.ips[0]]
             self.ready[index] = True
             self.registered.add(index)
             if path in self.lost_responses:
@@ -134,23 +163,31 @@ class ManagedScriptsTests(unittest.TestCase):
             "ALLOW_INITIALIZE": "false",
         }
         env.update(extra or {})
-        original_open = builtins.open
+        original_read_text = Path.read_text
+        elapsed = [0.0]
 
-        def fake_open(path, *args, **kwargs):
+        def sleep(seconds):
+            elapsed[0] += seconds
+
+        def read_text(path, *args, **kwargs):
             if str(path).endswith("/serviceaccount/token"):
                 fake.token_reads += 1
-                return io.StringIO("synthetic-service-token")
-            return original_open(path, *args, **kwargs)
+                return "synthetic-service-token"
+            return original_read_text(path, *args, **kwargs)
 
         with ExitStack() as stack:
             stack.enter_context(mock.patch.dict(os.environ, env, clear=True))
-            stack.enter_context(mock.patch("builtins.open", side_effect=fake_open))
-            stack.enter_context(mock.patch.object(urllib.request, "urlopen", side_effect=fake.urlopen))
+            stack.enter_context(mock.patch.object(managed_api, "open_request", side_effect=fake.urlopen))
             stack.enter_context(mock.patch.object(socket, "gethostbyname", side_effect=fake.resolve))
-            stack.enter_context(mock.patch.object(ssl, "create_default_context", return_value=None))
-            stack.enter_context(mock.patch.object(time, "sleep"))
+            stack.enter_context(mock.patch.object(ssl, "create_default_context", return_value=mock.Mock()))
+            stack.enter_context(mock.patch.object(time, "sleep", side_effect=sleep))
+            stack.enter_context(mock.patch.object(time, "monotonic", side_effect=lambda: elapsed[0]))
+            stack.enter_context(mock.patch.object(Path, "read_text", read_text))
             stack.enter_context(redirect_stdout(io.StringIO()))
-            runpy.run_path(str(FILES / filename), run_name="__main__")
+            script = runpy.run_path(str(FILES / filename))
+            result = script["main"]()
+            if result:
+                raise SystemExit(result)
 
     def rejected(self, fake, message, script="managed-cluster.py", extra=None):
         errors = io.StringIO()
@@ -296,7 +333,9 @@ class ManagedScriptsTests(unittest.TestCase):
 
     def test_members_outside_requested_topology_are_rejected(self):
         fake = FakeApis(count=0, initialized=True)
-        fake.extra_nodes = [{"name": "unexpected.cluster.example.test"}]
+        fake.extra_nodes = [{"id": 999, "name": "unexpected.cluster.example.test",
+                             "url": "https://unexpected.cluster.example.test:53443/",
+                             "ipAddresses": ["10.0.0.99"], "type": "Secondary"}]
         self.rejected(fake, "outside the requested StatefulSet")
 
     def test_manual_promotion_uses_observed_primary(self):
@@ -328,7 +367,7 @@ class ManagedScriptsTests(unittest.TestCase):
                 raise urllib.error.URLError("synthetic peer outage")
             return original(req, **kwargs)
         fake.urlopen = unavailable
-        self.rejected(fake, "could not log in", extra={"ALLOW_INITIALIZE": "true"})
+        self.rejected(fake, "deadline exceeded", extra={"ALLOW_INITIALIZE": "true"})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,197 @@
+{{/*
+MIT License
+
+Copyright (c) 2026 Shane & Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+*/}}
+{{- if eq (include "technitium.managedEnabled" .) "true" -}}
+{{- $name := printf "%s-primary-observer" (include "technitium.fullname" .) -}}
+{{- $observer := .Values.cluster.managed.roleObserver | default dict -}}
+{{- $image := .Values.cluster.managed.jobImage -}}
+{{- $secretName := $observer.secretName | default (include "technitium.adminSecretName" .) -}}
+{{- $passwordKey := $observer.passwordKey | default (include "technitium.adminPasswordKey" .) -}}
+{{- $username := $observer.username | default (.Values.cluster.adminUsername | default "admin") -}}
+{{- $tokenKey := $observer.tokenKey | default "" -}}
+{{- if and $tokenKey (not $observer.secretName) -}}
+{{- fail "cluster.managed.roleObserver.tokenKey requires roleObserver.secretName" -}}
+{{- end -}}
+{{- $poll := 10 -}}
+{{- if hasKey $observer "pollSeconds" -}}{{- $poll = $observer.pollSeconds -}}{{- end -}}
+{{- if or (not (regexMatch "^[0-9]+$" (toString $poll))) (lt (int $poll) 5) (gt (int $poll) 300) -}}
+{{- fail "cluster.managed.roleObserver.pollSeconds must be an integer from 5 to 300" -}}
+{{- end -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "technitium.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "technitium.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    resourceNames:
+      {{- range $i := until (int (add 1 (int .Values.cluster.managed.secondaries))) }}
+      - {{ include "technitium.managedMemberName" $ }}-{{ $i }}
+      {{- end }}
+    verbs: [get, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [{{ $name }}]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "technitium.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ $name }}
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "technitium.labels" . | nindent 4 }}
+data:
+  managed_api.py: |
+    {{- .Files.Get "files/managed_api.py" | nindent 4 }}
+  managed_leader.py: |
+    {{- .Files.Get "files/managed_leader.py" | nindent 4 }}
+  controller.py: |
+    {{- .Files.Get "files/managed-primary-controller.py" | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "technitium.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "technitium.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: primary-observer
+  template:
+    metadata:
+      labels:
+        {{- include "technitium.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: primary-observer
+      annotations:
+        checksum/controller: {{ printf "%s%s%s" (.Files.Get "files/managed-primary-controller.py") (.Files.Get "files/managed_api.py") (.Files.Get "files/managed_leader.py") | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: observer
+          image: "{{ $image.repository }}:{{ $image.tag }}"
+          imagePullPolicy: {{ $image.pullPolicy | default "IfNotPresent" }}
+          command: [python, /scripts/controller.py]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          env:
+            {{- include "technitium.managedTlsEnv" . | nindent 12 }}
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: LEASE_NAME
+              value: {{ $name | quote }}
+            - name: RELEASE_NAME
+              value: {{ .Release.Name | quote }}
+            - name: MEMBER_BASE
+              value: {{ include "technitium.managedMemberName" . | quote }}
+            - name: CLUSTER_DOMAIN
+              value: {{ .Values.cluster.domain | quote }}
+            - name: SECONDARIES
+              value: {{ .Values.cluster.managed.secondaries | quote }}
+            - name: HTTPS_PORT
+              value: {{ .Values.ports.webHttps | default 53443 | quote }}
+            - name: OBSERVER_USER
+              value: {{ $username | quote }}
+            - name: {{ ternary "TOKEN_FILE" "PASSWORD_FILE" (ne $tokenKey "") }}
+              value: /credentials/credential
+            - name: POLL_SECONDS
+              value: {{ $poll | quote }}
+          volumeMounts:
+            {{- include "technitium.managedCaMount" . | nindent 12 }}
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: credentials
+              mountPath: /credentials
+              readOnly: true
+      volumes:
+        {{- include "technitium.managedCaVolume" . | nindent 8 }}
+        - name: scripts
+          configMap:
+            name: {{ $name }}
+        - name: credentials
+          secret:
+            secretName: {{ $secretName | quote }}
+            items:
+              - key: {{ ($tokenKey | default $passwordKey) | quote }}
+                path: credential
+---
+# The observer owns spec; Helm must not apply lease state on upgrades.
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "technitium.labels" . | nindent 4 }}
+{{- end }}

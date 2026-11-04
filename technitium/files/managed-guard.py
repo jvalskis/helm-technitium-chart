@@ -3,53 +3,50 @@
 
 """Check the existing StatefulSet before Helm changes managed workloads."""
 
-import json
 import os
-import ssl
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
+
+from managed_api import ApiError, KubernetesClient
 
 
-def fail(message):
-    print(f"managed cluster guard: {message}", file=sys.stderr)
-    sys.exit(1)
-
-
-namespace = os.environ["NAMESPACE"]
-name = os.environ["STATEFULSET_NAME"]
-release = os.environ["RELEASE_NAME"]
-domain = os.environ["CLUSTER_DOMAIN"]
-requested = int(os.environ["SECONDARIES"]) + 1
-host = os.environ["KUBERNETES_SERVICE_HOST"]
-port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
-selector = f"app.kubernetes.io/instance={release}"
-query = urllib.parse.urlencode({"labelSelector": selector})
-url = f"https://{host}:{port}/apis/apps/v1/namespaces/{namespace}/statefulsets?{query}"
-token = open("/var/run/secrets/kubernetes.io/serviceaccount/token", encoding="utf-8").read()
-context = ssl.create_default_context(cafile="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
-req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-try:
-    with urllib.request.urlopen(req, context=context, timeout=15) as response:
-        current = json.load(response)["items"]
-except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as exc:
-    fail(f"could not inspect existing StatefulSets: {type(exc).__name__}")
-
-if len(current) > 1:
-    fail("multiple managed StatefulSets belong to this release; inspect them before upgrading")
-if current:
+def run(env):
+    namespace, name = env["NAMESPACE"], env["STATEFULSET_NAME"]
+    requested = int(env["SECONDARIES"]) + 1
+    query = urllib.parse.urlencode({"labelSelector": f"app.kubernetes.io/instance={env['RELEASE_NAME']}"})
+    try:
+        current = KubernetesClient(namespace).request(
+            f"/apis/apps/v1/namespaces/{namespace}/statefulsets?{query}")["items"]
+    except (ApiError, KeyError) as exc:
+        raise ApiError(f"could not inspect existing StatefulSets: {type(exc).__name__}") from None
+    if len(current) > 1:
+        raise ApiError("multiple managed StatefulSets belong to this release; inspect them before upgrading")
+    if not current:
+        print("managed cluster guard: no existing managed StatefulSet", flush=True)
+        return
     workload = current[0]
     if workload["metadata"]["name"] != name:
-        fail("managed StatefulSet naming cannot change during an upgrade")
+        raise ApiError("managed StatefulSet naming cannot change during an upgrade")
     previous = workload["spec"]["replicas"]
     if requested < previous:
-        fail(f"scale-down from {previous} to {requested} members is unsupported")
+        raise ApiError(f"scale-down from {previous} to {requested} members is unsupported")
     containers = workload["spec"]["template"]["spec"]["containers"]
     dns = next((item for item in containers if item["name"] == "technitium-dns-server"), None)
-    expected = f"$(POD_NAME).{domain}"
-    if dns is None or not any(item.get("name") == "DNS_SERVER_DOMAIN" and item.get("value") == expected for item in dns.get("env", [])):
-        fail("managed cluster domain cannot change during an upgrade")
-    print(f"managed cluster guard: {previous} to {requested} members permitted")
-else:
-    print("managed cluster guard: no existing managed StatefulSet")
+    expected = f"$(POD_NAME).{env['CLUSTER_DOMAIN']}"
+    if dns is None or not any(item.get("name") == "DNS_SERVER_DOMAIN" and item.get("value") == expected
+                              for item in dns.get("env", [])):
+        raise ApiError("managed cluster domain cannot change during an upgrade")
+    print(f"managed cluster guard: {previous} to {requested} members permitted", flush=True)
+
+
+def main():
+    try:
+        run(os.environ)
+    except ApiError as exc:
+        print(f"managed cluster guard: {exc}", file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

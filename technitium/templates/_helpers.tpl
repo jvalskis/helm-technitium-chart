@@ -107,6 +107,15 @@ member resource suffixes and hashes long names to avoid collisions.
 {{- end -}}
 {{- end -}}
 {{- if $m.enabled -}}
+{{- $tls := $m.tls | default dict -}}
+{{- if not (kindIs "map" $tls) -}}{{ fail "cluster.managed.tls must be a map" }}{{- end -}}
+{{- if and (hasKey $tls "verify") (not (kindIs "bool" $tls.verify)) -}}{{ fail "cluster.managed.tls.verify must be a boolean" }}{{- end -}}
+{{- if $tls.caSecretName -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" (toString $tls.caSecretName)) -}}{{ fail "cluster.managed.tls.caSecretName must be a valid Secret name" }}{{- end -}}
+{{- if not (regexMatch "^[a-zA-Z0-9._-]+$" (toString ($tls.caKey | default "ca.crt"))) -}}{{ fail "cluster.managed.tls.caKey must be a valid Secret key" }}{{- end -}}
+{{- end -}}
+{{- if and (hasKey $m "bootstrapHttp") (not (kindIs "bool" $m.bootstrapHttp)) -}}{{ fail "cluster.managed.bootstrapHttp must be a boolean" }}{{- end -}}
+{{- if hasKey $m "updateTargetOrdinal" -}}{{ fail "cluster.managed.updateTargetOrdinal was removed; the primary observer now selects the primary Service endpoint" }}{{- end -}}
 {{- if not .Values.cluster.enabled -}}{{ fail "cluster.enabled must be true when cluster.managed.enabled is true" }}{{- end -}}
 {{- if not .Values.cluster.autoJoin -}}{{ fail "cluster.autoJoin must be true when cluster.managed.enabled is true" }}{{- end -}}
 {{- if and .Values.bootstrap.enabled (or .Values.bootstrap.zones .Values.bootstrap.reverseZones) -}}{{ fail "bootstrap zones are not supported in managed mode; enroll zones after the cluster is verified" }}{{- end -}}
@@ -114,8 +123,6 @@ member resource suffixes and hashes long names to avoid collisions.
 {{- if ne (include "technitium.persistenceEnabled" .) "true" -}}{{ fail "cluster.managed requires persistence.enabled=true" }}{{- end -}}
 {{- if (.Values.persistence | default dict).existingClaim -}}{{ fail "cluster.managed cannot use persistence.existingClaim; each StatefulSet member needs its own claim" }}{{- end -}}
 {{- if not (regexMatch "^[0-9]$" (toString $m.secondaries)) -}}{{ fail "cluster.managed.secondaries must be an integer from 0 to 9" }}{{- end -}}
-{{- $target := $m.updateTargetOrdinal | toString -}}
-{{- if or (not (regexMatch "^[0-9]$" $target)) (gt (int $target) (int $m.secondaries)) -}}{{ fail "cluster.managed.updateTargetOrdinal must be an existing member ordinal" }}{{- end -}}
 {{- end -}}
 {{- end -}}
 
@@ -125,6 +132,40 @@ member resource suffixes and hashes long names to avoid collisions.
 
 {{- define "technitium.managedHookName" -}}
 {{- printf "technitium-managed-%s-%s" (.Release.Name | trunc 24 | trimSuffix "-") (printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 8) -}}
+{{- end -}}
+
+{{- define "technitium.managedTlsVerify" -}}
+{{- $tls := .Values.cluster.managed.tls | default dict -}}
+{{- if hasKey $tls "verify" -}}{{ $tls.verify }}{{- else -}}true{{- end -}}
+{{- end -}}
+
+{{- define "technitium.managedTlsEnv" -}}
+- name: VERIFY_TLS
+  value: {{ include "technitium.managedTlsVerify" . | quote }}
+{{- if (.Values.cluster.managed.tls | default dict).caSecretName }}
+- name: CA_FILE
+  value: /peer-ca/ca.crt
+{{- end -}}
+{{- end -}}
+
+{{- define "technitium.managedCaMount" -}}
+{{- if (.Values.cluster.managed.tls | default dict).caSecretName -}}
+- name: managed-peer-ca
+  mountPath: /peer-ca
+  readOnly: true
+{{- end -}}
+{{- end -}}
+
+{{- define "technitium.managedCaVolume" -}}
+{{- $tls := .Values.cluster.managed.tls | default dict -}}
+{{- if $tls.caSecretName -}}
+- name: managed-peer-ca
+  secret:
+    secretName: {{ $tls.caSecretName | quote }}
+    items:
+      - key: {{ $tls.caKey | default "ca.crt" | quote }}
+        path: ca.crt
+{{- end -}}
 {{- end -}}
 
 

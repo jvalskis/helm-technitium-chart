@@ -11,18 +11,30 @@ PVC.
 ```yaml
 config:
   adminPassword: replace-with-a-synthetic-test-password
+  webServiceEnableHttps: true
+  webServiceUseSelfSignedCert: false
+  webServiceTlsCertificatePath: /etc/dns/tls/cert.pfx
 cluster:
   enabled: true
+  autoHttps: false # use the PKI-issued certificate
   domain: cluster.example.test
   podNetworks: [10.244.0.0/16]
   managed:
     enabled: true
     initialize: false # override to true for the first install only
     secondaries: 2
-    updateTargetOrdinal: 0
+    tls:
+      verify: true # default
+      caSecretName: local-pki-ca
+      caKey: ca.crt # PEM CA bundle
 ```
 
 For release `dns`, the Pods are `dns-technitium-cluster-0` through `-2`.
+Provision the server PFX on each member's PVC at the configured path before
+startup. Its DNS SAN must cover that member's name, for example
+`dns-technitium-cluster-0.cluster.example.test` (or `*.cluster.example.test`).
+The CA Secret adds trust; it does not install or issue server certificates.
+Existing servers must also have their saved TLS settings aligned.
 
 | Service | Purpose |
 | --- | --- |
@@ -31,11 +43,44 @@ For release `dns`, the Pods are `dns-technitium-cluster-0` through `-2`.
 | `dns-technitium-dns` | Client queries across all ready members |
 | `dns-technitium-primary` | Single-member ClusterIP for DNS UPDATE on port 53 and HTTPS API writes on 53443 |
 
-`updateTargetOrdinal` selects that member by Pod name (initially ordinal zero).
-The selector does not follow Technitium roles. After promotion, set it to the
-new primary's ordinal; changing it routes traffic but does not promote a node.
-On upgrade from the earlier managed preview, repoint writers from `-update`
-to `-primary`; Helm removes the old Service.
+A one-replica observer Deployment reads cluster state from the peer Services.
+It labels the primary Pod only when a strict majority of configured members agree
+and that primary reports itself. The `-primary` Service has a fixed selector for
+`technitium.io/cluster-role: primary`. The observer clears old primary labels
+before assigning a new one; conflicting or insufficient reports clear all of them.
+The label is absent from the StatefulSet template, so new Pods need observation.
+One Kubernetes Lease coordinates overlapping observer Pods. Pod writes check
+ownership, UID, resource version, and an observer annotation; takeover or an
+uncertain write invalidates older requests. Replacement may wait up to 30 seconds
+for Lease expiry, plus polling. RBAC permits get/patch only on this Lease and the
+named member Pods. Helm owns the Service and does not manage the Lease's state.
+It does not promote or rejoin members. With two members, a promotion cannot
+restore writes until the former primary rejoins.
+
+The observer reuses the chart administrator Secret by default. For a separate
+read-only cluster-state user, set `roleObserver.secretName`, `username`, and
+`passwordKey`. Alternatively, set `secretName` and `tokenKey` for an API token
+valid on every member with Administration View permission; this avoids password
+login for a user with 2FA. The observer reuses sessions and reloads changed Secret
+contents. It polls every 10 seconds by default (`pollSeconds`: 5-300).
+Managed hooks send `cluster.primaryNodeTotp` to login and join, but a saved code
+expires; use an automation account for unattended upgrades.
+
+Peer API calls validate certificate chains, expiry, and member DNS names by
+default (`cluster.managed.tls.verify: true`). Connections use peer Service IPs
+with the member name as TLS SNI. Without `caSecretName`, the client image's system
+CA store is used. A CA Secret is mounted into the coordinator, observer, and
+managed servers; servers use `SSL_CERT_FILE` for verified initial joins. Restart
+the observer and member Pods after rotating the CA bundle. Technitium's native
+DANE checks remain unchanged.
+
+For generated self-signed certificates without a trusted CA, explicitly set
+`cluster.managed.tls.verify: false`; The setting also controls 
+`ignoreCertificateErrors` on managed joins. HTTPS failures never trigger HTTP
+fallback or credential-bearing redirects. If the observer stops or cannot patch the
+Pods, a stale primary label can remain: monitor its logs and isolate an old
+primary during recovery. Earlier managed previews must remove
+`updateTargetOrdinal` from values before upgrading.
 
 Use IPv4 peer Service ClusterIPs. Managed mode requires persistence and
 `cluster.podNetworks`; it does not support bootstrap zones or
@@ -97,9 +142,9 @@ Services until recovery is complete.
    new primary has the zone and its records, back it up, then delete the stale
    copy on the **former primary only**. For self-signed TLS, select **Ignore
    Certificate Errors** in the manual join form.
-4. Confirm all members agree on membership. Set `updateTargetOrdinal` to the
-   promoted ordinal, run Helm, check the `-primary` endpoint and DNS answers,
-   then restore client traffic.
+4. Confirm all members agree on membership. Wait for the observer to route
+   `-primary` to the promoted Pod, check its endpoint and DNS answers, then
+   restore client traffic.
 
 Helm rollback does not reverse Technitium promotion or persisted zone changes.
 
@@ -115,6 +160,9 @@ Service; environment variables do not rename persisted identity. Start with
 `secondaries: 0` and verify data and updates before expanding. A new Helm
 release can use `initialize: true` on its first install. Converting an existing
 release is an upgrade: initialize through Technitium's UI, then rerun Helm.
+If the copied server only serves HTTP, temporarily set
+`cluster.managed.bootstrapHttp: true` to let the hook inspect ordinal zero over
+HTTP. Reset it to `false` after enabling HTTPS. Other members always use HTTPS.
 
 ## Verify before client cutover
 
@@ -122,5 +170,6 @@ release is an upgrade: initialize through Technitium's UI, then rerun Helm.
    and its own stable peer Service IP.
 2. Intended zones are enrolled in the catalog. Check serials and representative
    records over UDP and TCP against each member's peer Service.
-3. Change a test record through `-primary`, confirm it on every member, restart
-   Pods one at a time, and repeat the checks.
+3. Confirm `-primary` points to the observed primary. Change a test record
+   through it, confirm it on every member, restart Pods one at a time, and
+   repeat the checks.

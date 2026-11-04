@@ -84,7 +84,7 @@ spec:
   selector:
     {{- include "technitium.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: cluster-member
-    statefulset.kubernetes.io/pod-name: {{ $base }}-{{ .Values.cluster.managed.updateTargetOrdinal }}
+    technitium.io/cluster-role: primary
   ports:
     - name: dns-udp
       port: 53

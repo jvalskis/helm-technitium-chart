@@ -305,10 +305,28 @@ cluster:
     # on upgrades; an unclustered existing member requires operator recovery.
     initialize: false
     secondaries: 0
-    # Stable member selected by the primary Service. After manual
-    # promotion, set this to the promoted member's StatefulSet ordinal.
-    updateTargetOrdinal: 0
-    # Python provides strict JSON handling for the API and Kubernetes guard.
+    # Explicit migration-only HTTP access to ordinal zero. No automatic HTTPS downgrade.
+    bootstrapHttp: false
+    # Validate managed API certificates against each member's cluster DNS name.
+    # Set verify=false explicitly for an untrusted self-signed test installation.
+    tls:
+      verify: true
+      # Optional existing Secret containing a PEM CA bundle. No private key needed.
+      # Mounted by the hooks, observer, and managed servers (for verified joins).
+      caSecretName: ""
+      caKey: ca.crt
+    # The primary observer polls Technitium and owns the -primary Service route.
+    # A dedicated read-only cluster-state credential is recommended. Empty
+    # secretName/passwordKey reuse the chart administrator Secret and key.
+    roleObserver:
+      pollSeconds: 10
+      secretName: ""
+      passwordKey: ""
+      username: ""
+      # API token valid on all members, with Administration View permission.
+      # Replaces password login (including for 2FA users); requires secretName.
+      tokenKey: ""
+    # Python image for the cluster hooks and primary observer.
     jobImage:
       repository: python
       tag: 3.12-alpine
@@ -332,9 +350,10 @@ cluster:
   # Password key in the primary administrator Secret.
   primaryAdminPasswordKey: password
 
-  # When true (default while cluster.enabled), the chart forces HTTPS on the
-  # web service with a self-signed cert — required for DANE-EE node-to-node
-  # TLS. Set to false only if you are terminating TLS some other way (rare).
+  # Forces HTTPS with a generated self-signed certificate. For a PKI-issued
+  # server certificate, set false and configure config.webServiceEnableHttps,
+  # config.webServiceUseSelfSignedCert, and config.webServiceTlsCertificatePath.
+  # Cluster members must serve TLS directly for Technitium's DANE validation.
   autoHttps: true
 
   # Automate cluster init/join via Technitium's HTTP admin API after install.
@@ -354,7 +373,8 @@ cluster:
   # in the configured Secret (Technitium's default is "admin").
   adminUsername: "admin"
 
-  # Optional 6-digit TOTP code for the admin user when joining a cluster.
+  # Optional 6-digit TOTP code for cluster joins and managed-hook login.
+  # Use an automation account for repeated upgrades; a saved TOTP code expires.
   # Leave empty unless you've enabled 2FA on the primary's admin account.
   primaryNodeTotp: ""
 

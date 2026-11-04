@@ -3,3 +3,7 @@
 
 # Local design notes (non-tracked).
 plan/
+
+# Python bytecode from local checks.
+__pycache__/
+*.py[cod]

@@ -222,7 +222,7 @@ kubectl get secret my-dns-admin -n technitium -o jsonpath="{.data.password}" | b
 
 For one Helm release with all members in a StatefulSet, see
 [Managed secondaries](docs/managed-clustering.md). The mode is opt-in and uses
-retained per-member storage, a guarded Helm hook, and an explicit primary route.
+retained per-member storage, a guarded Helm hook, and an observed-primary route.
 New cluster creation requires `cluster.managed.initialize=true` on the first
 install. Upgrades only verify membership and join new members. No separate
 cluster progress record is maintained.
