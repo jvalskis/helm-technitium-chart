@@ -139,3 +139,67 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: cluster.managed.tls.verify must be a boolean
+
+  - it: mounts a CA bundle ConfigMap for the coordinator
+    template: managed-hook.yaml
+    documentIndex: 5
+    set: &withCaConfigMap
+      <<: *managed
+      cluster.managed.tls.caConfigMapName: astralas-lan
+      cluster.managed.tls.caKey: root-certs.pem
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: managed-peer-ca
+            configMap:
+              name: astralas-lan
+              items:
+                - key: root-certs.pem
+                  path: ca.crt
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CA_FILE
+            value: /peer-ca/ca.crt
+      - notExists:
+          path: spec.template.spec.volumes[?(@.name == 'managed-peer-ca')].secret
+
+  - it: uses a CA ConfigMap in the observer
+    template: managed-primary-controller.yaml
+    documentIndex: 4
+    set: *withCaConfigMap
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'managed-peer-ca')].configMap.name
+          value: astralas-lan
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == 'managed-peer-ca')].mountPath
+          value: /peer-ca
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CA_FILE
+            value: /peer-ca/ca.crt
+
+  - it: uses a CA ConfigMap in managed servers
+    template: statefulset-managed.yaml
+    set: *withCaConfigMap
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'managed-peer-ca')].configMap.items[0].key
+          value: root-certs.pem
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SSL_CERT_FILE
+            value: /peer-ca/ca.crt
+
+  - it: rejects two CA sources
+    template: deployment.yaml
+    set:
+      <<: *withCaConfigMap
+      cluster.managed.tls.caSecretName: local-pki-ca
+    asserts:
+      - failedTemplate:
+          errorMessage: set only one of cluster.managed.tls.caSecretName and caConfigMapName

@@ -21,6 +21,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */}}
 {{- if eq (include "technitium.managedEnabled" .) "true" -}}
+{{- $tls := .Values.cluster.managed.tls | default dict -}}
 {{- $deployment := include "technitium.primaryDeployment" . | fromYaml -}}
 {{- $pod := deepCopy $deployment.spec.template -}}
 {{- $_ := set $pod.metadata.labels "app.kubernetes.io/component" "cluster-member" -}}
@@ -37,11 +38,11 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
       {{- end -}}
       {{- $env = append $env $item -}}
     {{- end -}}
-    {{- $_ := set $container "env" $env -}}
-    {{- if ($.Values.cluster.managed.tls | default dict).caSecretName -}}
-      {{- $_ := set $container "env" (append $env (dict "name" "SSL_CERT_FILE" "value" "/peer-ca/ca.crt")) -}}
+    {{- if or $tls.caSecretName $tls.caConfigMapName -}}
+      {{- $env = append $env (dict "name" "SSL_CERT_FILE" "value" "/peer-ca/ca.crt") -}}
       {{- $_ := set $container "volumeMounts" (concat $container.volumeMounts (include "technitium.managedCaMount" $ | fromYamlArray)) -}}
     {{- end -}}
+    {{- $_ := set $container "env" $env -}}
     {{- $containers = append $containers $container -}}
   {{- end -}}
 {{- end -}}

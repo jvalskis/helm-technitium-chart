@@ -110,8 +110,12 @@ member resource suffixes and hashes long names to avoid collisions.
 {{- $tls := $m.tls | default dict -}}
 {{- if not (kindIs "map" $tls) -}}{{ fail "cluster.managed.tls must be a map" }}{{- end -}}
 {{- if and (hasKey $tls "verify") (not (kindIs "bool" $tls.verify)) -}}{{ fail "cluster.managed.tls.verify must be a boolean" }}{{- end -}}
-{{- if $tls.caSecretName -}}
-{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" (toString $tls.caSecretName)) -}}{{ fail "cluster.managed.tls.caSecretName must be a valid Secret name" }}{{- end -}}
+{{- if and $tls.caSecretName $tls.caConfigMapName -}}{{ fail "set only one of cluster.managed.tls.caSecretName and caConfigMapName" }}{{- end -}}
+{{- range $field := list "caSecretName" "caConfigMapName" -}}
+{{- $value := get $tls $field -}}
+{{- if and $value (not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" (toString $value))) -}}{{ fail (printf "cluster.managed.tls.%s must be a valid resource name" $field) }}{{- end -}}
+{{- end -}}
+{{- if or $tls.caSecretName $tls.caConfigMapName -}}
 {{- if not (regexMatch "^[a-zA-Z0-9._-]+$" (toString ($tls.caKey | default "ca.crt"))) -}}{{ fail "cluster.managed.tls.caKey must be a valid Secret key" }}{{- end -}}
 {{- end -}}
 {{- if and (hasKey $m "bootstrapHttp") (not (kindIs "bool" $m.bootstrapHttp)) -}}{{ fail "cluster.managed.bootstrapHttp must be a boolean" }}{{- end -}}
@@ -140,16 +144,18 @@ member resource suffixes and hashes long names to avoid collisions.
 {{- end -}}
 
 {{- define "technitium.managedTlsEnv" -}}
+{{- $tls := .Values.cluster.managed.tls | default dict -}}
 - name: VERIFY_TLS
   value: {{ include "technitium.managedTlsVerify" . | quote }}
-{{- if (.Values.cluster.managed.tls | default dict).caSecretName }}
+{{- if or $tls.caSecretName $tls.caConfigMapName }}
 - name: CA_FILE
   value: /peer-ca/ca.crt
 {{- end -}}
 {{- end -}}
 
 {{- define "technitium.managedCaMount" -}}
-{{- if (.Values.cluster.managed.tls | default dict).caSecretName -}}
+{{- $tls := .Values.cluster.managed.tls | default dict -}}
+{{- if or $tls.caSecretName $tls.caConfigMapName -}}
 - name: managed-peer-ca
   mountPath: /peer-ca
   readOnly: true
@@ -158,10 +164,15 @@ member resource suffixes and hashes long names to avoid collisions.
 
 {{- define "technitium.managedCaVolume" -}}
 {{- $tls := .Values.cluster.managed.tls | default dict -}}
-{{- if $tls.caSecretName -}}
+{{- if or $tls.caSecretName $tls.caConfigMapName -}}
 - name: managed-peer-ca
+{{- if $tls.caSecretName }}
   secret:
     secretName: {{ $tls.caSecretName | quote }}
+{{- else }}
+  configMap:
+    name: {{ $tls.caConfigMapName | quote }}
+{{- end }}
     items:
       - key: {{ $tls.caKey | default "ca.crt" | quote }}
         path: ca.crt

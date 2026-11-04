@@ -25,7 +25,7 @@ cluster:
     secondaries: 2
     tls:
       verify: true # default
-      caSecretName: local-pki-ca
+      caConfigMapName: local-pki-trust
       caKey: ca.crt # PEM CA bundle
 ```
 
@@ -33,7 +33,7 @@ For release `dns`, the Pods are `dns-technitium-cluster-0` through `-2`.
 Provision the server PFX on each member's PVC at the configured path before
 startup. Its DNS SAN must cover that member's name, for example
 `dns-technitium-cluster-0.cluster.example.test` (or `*.cluster.example.test`).
-The CA Secret adds trust; it does not install or issue server certificates.
+The CA bundle adds trust; it does not install or issue server certificates.
 Existing servers must also have their saved TLS settings aligned.
 
 | Service | Purpose |
@@ -68,14 +68,16 @@ expires; use an automation account for unattended upgrades.
 
 Peer API calls validate certificate chains, expiry, and member DNS names by
 default (`cluster.managed.tls.verify: true`). Connections use peer Service IPs
-with the member name as TLS SNI. Without `caSecretName`, the client image's system
-CA store is used. A CA Secret is mounted into the coordinator, observer, and
-managed servers; servers use `SSL_CERT_FILE` for verified initial joins. Restart
+with the member name as TLS SNI. Select a CA bundle with `caConfigMapName` or
+`caSecretName` (one source only); `caKey` selects its PEM data entry. Without
+either source, the client image's system CA store is used. The bundle is mounted
+at `/peer-ca/ca.crt` in the coordinator, observer, and managed servers; servers
+use `SSL_CERT_FILE` for verified initial joins. Restart
 the observer and member Pods after rotating the CA bundle. Technitium's native
 DANE checks remain unchanged.
 
 For generated self-signed certificates without a trusted CA, explicitly set
-`cluster.managed.tls.verify: false`; The setting also controls 
+`cluster.managed.tls.verify: false`. The setting also controls
 `ignoreCertificateErrors` on managed joins. HTTPS failures never trigger HTTP
 fallback or credential-bearing redirects. If the observer stops or cannot patch the
 Pods, a stale primary label can remain: monitor its logs and isolate an old
@@ -160,9 +162,10 @@ Service; environment variables do not rename persisted identity. Start with
 `secondaries: 0` and verify data and updates before expanding. A new Helm
 release can use `initialize: true` on its first install. Converting an existing
 release is an upgrade: initialize through Technitium's UI, then rerun Helm.
-If the copied server only serves HTTP, temporarily set
-`cluster.managed.bootstrapHttp: true` to let the hook inspect ordinal zero over
-HTTP. Reset it to `false` after enabling HTTPS. Other members always use HTTPS.
+If ordinal zero uses the old standalone server's saved configuration and HTTPS
+is still disabled, temporarily set `cluster.managed.bootstrapHttp: true`. This
+lets the hook inspect that member over HTTP during migration. Reset it to
+`false` after enabling HTTPS. Other members always use HTTPS.
 
 ## Verify before client cutover
 

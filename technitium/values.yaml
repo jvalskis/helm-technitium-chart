@@ -311,9 +311,11 @@ cluster:
     # Set verify=false explicitly for an untrusted self-signed test installation.
     tls:
       verify: true
-      # Optional existing Secret containing a PEM CA bundle. No private key needed.
+      # Optional PEM CA bundle from an existing Secret OR ConfigMap (not both).
+      # No private key needed; caKey selects the data entry in either resource.
       # Mounted by the hooks, observer, and managed servers (for verified joins).
       caSecretName: ""
+      caConfigMapName: ""
       caKey: ca.crt
     # The primary observer polls Technitium and owns the -primary Service route.
     # A dedicated read-only cluster-state credential is recommended. Empty
