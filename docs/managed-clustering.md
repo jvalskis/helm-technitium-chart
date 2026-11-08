@@ -13,11 +13,10 @@ config:
   adminPassword: replace-with-a-synthetic-test-password
   webServiceEnableHttps: true
   webServiceUseSelfSignedCert: false
-  webServiceTlsCertificatePath: /etc/dns/tls/cert.pfx
 cluster:
   enabled: true
   autoHttps: false # use the PKI-issued certificate
-  domain: cluster.example.test
+  domain: cluster.example.com
   podNetworks: [10.244.0.0/16]
   managed:
     enabled: true
@@ -27,14 +26,36 @@ cluster:
       verify: true # default
       caConfigMapName: local-pki-trust
       caKey: ca.crt # PEM CA bundle
+      serverCertificate:
+        secretName: cluster-server-tls
+        key: keystore.p12
+        passwordSecretName: cluster-keystore-password
+        passwordKey: password
 ```
 
 For release `dns`, the Pods are `dns-technitium-cluster-0` through `-2`.
-Provision the server PFX on each member's PVC at the configured path before
-startup. Its DNS SAN must cover that member's name, for example
-`dns-technitium-cluster-0.cluster.example.test` (or `*.cluster.example.test`).
-The CA bundle adds trust; it does not install or issue server certificates.
-Existing servers must also have their saved TLS settings aligned.
+The existing server certificate Secret supplies a PKCS#12 file. Its DNS SANs
+must cover every member, for example `*.cluster.example.com`; a shared wildcard
+Secret gives all members the same key. The chart mounts
+it read-only at `/peer-tls/server/keystore.p12`, overriding `config.webServiceTlsCertificatePath`.
+The password comes from the referenced Secret; omit `passwordSecretName` for an
+unencrypted file. These Secrets must exist in the release namespace.
+
+cert-manager can create this file with `keystores.pkcs12.create: true`,
+`profile: Modern2023`, and `passwordSecretRef`. Manage its Certificate separately
+and set `privateKey.rotationPolicy: Always`. The directory mount and nested file
+path expose renewed file timestamps to Technitium. A flat projected file symlink
+keeps its timestamp and prevents reload. Technitium checks for changes every
+60 seconds, in addition to Kubernetes projection delay; verify renewal and DANE
+records on your installation. Keep the keystore password stable during renewal.
+
+The CA bundle adds trust; it does not issue server certificates. Without
+`serverCertificate.secretName`, provision a PFX on each PVC and set
+`config.webServiceTlsCertificatePath` instead. Existing servers must have their
+saved TLS path/password aligned; environment values initialize fresh storage only.
+These settings configure Technitium's web/API HTTPS listener. Ingress TLS is separate.
+Use a real cluster domain with working DNS resolution; Technitium 15.6's reserved
+`.test` handling can fail native DANE/DNSSEC lookups even with a trusted certificate.
 
 | Service | Purpose |
 | --- | --- |
@@ -133,7 +154,7 @@ Services until recovery is complete.
 1. Promote the chosen secondary in Technitium. Rejoin the former primary through
    the UI using the new primary's cluster node URL and peer Service IP. For
    ordinal one in the example, the URL is
-   `https://dns-technitium-cluster-1.cluster.example.test:53443/` and the IP is
+   `https://dns-technitium-cluster-1.cluster.example.com:53443/` and the IP is
    from `dns-technitium-cluster-1-web`.
 2. Set the former primary's **own node IP** to its `-0-web` Service IP. Never
    save a Pod IP or the movable `-primary` Service IP as a node address. If an

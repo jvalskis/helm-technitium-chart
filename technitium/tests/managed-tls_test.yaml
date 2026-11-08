@@ -203,3 +203,140 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: set only one of cluster.managed.tls.caSecretName and caConfigMapName
+
+  - it: projects an existing server certificate and references its password
+    template: statefulset-managed.yaml
+    set: &withServerCertificate
+      <<: *withCaConfigMap
+      cluster.autoHttps: false
+      config.webServiceEnableHttps: true
+      config.webServiceUseSelfSignedCert: false
+      config.webServiceTlsCertificatePath: /ignored.pfx
+      cluster.managed.tls.serverCertificate.secretName: cluster-server-tls
+      cluster.managed.tls.serverCertificate.key: custom.pfx
+      cluster.managed.tls.serverCertificate.passwordSecretName: cluster-keystore-password
+      cluster.managed.tls.serverCertificate.passwordKey: passphrase
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PATH
+            value: /peer-tls/server/keystore.p12
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: cluster-keystore-password
+                key: passphrase
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: managed-server-tls
+            secret:
+              secretName: cluster-server-tls
+              defaultMode: 288
+              items:
+                - key: custom.pfx
+                  path: server/keystore.p12
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: managed-server-tls
+            mountPath: /peer-tls
+            readOnly: true
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == 'DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PASSWORD')].value
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == 'DNS_SERVER_WEB_SERVICE_USE_SELF_SIGNED_CERT')]
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == 'managed-server-tls')].subPath
+
+  - it: keeps the server private key out of the observer
+    template: managed-primary-controller.yaml
+    documentIndex: 4
+    set: *withServerCertificate
+    asserts:
+      - notExists:
+          path: spec.template.spec.volumes[?(@.name == 'managed-server-tls')]
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == 'DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PASSWORD')]
+
+  - it: keeps the server private key out of the coordinator
+    template: managed-hook.yaml
+    documentIndex: 5
+    set: *withServerCertificate
+    asserts:
+      - notExists:
+          path: spec.template.spec.volumes[?(@.name == 'managed-server-tls')]
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == 'DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PASSWORD')]
+
+  - it: preserves PVC-based certificates when no server Secret is configured
+    template: statefulset-managed.yaml
+    set:
+      <<: *managed
+      config.webServiceTlsCertificatePath: /etc/dns/old.pfx
+    asserts:
+      - notExists:
+          path: spec.template.spec.volumes[?(@.name == 'managed-server-tls')]
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PATH
+            value: /etc/dns/old.pfx
+
+  - it: supports an unencrypted keystore
+    template: statefulset-managed.yaml
+    set:
+      <<: *withServerCertificate
+      cluster.managed.tls.serverCertificate.passwordSecretName: ""
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == 'DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PASSWORD')]
+
+  - it: rejects automatic self-signed certificates with an existing certificate
+    template: deployment.yaml
+    set:
+      <<: *withServerCertificate
+      cluster.autoHttps: true
+    asserts:
+      - failedTemplate:
+          errorMessage: serverCertificate requires cluster.autoHttps=false and config.webServiceUseSelfSignedCert=false
+
+  - it: requires HTTPS with an existing certificate
+    template: deployment.yaml
+    set:
+      <<: *withServerCertificate
+      config.webServiceEnableHttps: false
+    asserts:
+      - failedTemplate:
+          errorMessage: serverCertificate requires config.webServiceEnableHttps=true
+
+  - it: rejects two keystore password sources
+    template: deployment.yaml
+    set:
+      <<: *withServerCertificate
+      config.webServiceTlsCertificatePassword: conflicting-password
+    asserts:
+      - failedTemplate:
+          errorMessage: set only one of serverCertificate.passwordSecretName and config.webServiceTlsCertificatePassword
+
+  - it: rejects a password Secret without a certificate Secret
+    template: deployment.yaml
+    set:
+      <<: *withServerCertificate
+      cluster.managed.tls.serverCertificate.secretName: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: serverCertificate.passwordSecretName requires serverCertificate.secretName
+
+  - it: rejects paths as Secret keys
+    template: deployment.yaml
+    set:
+      <<: *withServerCertificate
+      cluster.managed.tls.serverCertificate.key: ../keystore.p12
+    asserts:
+      - failedTemplate:
+          errorMessage: serverCertificate.key must be a valid Secret key

@@ -22,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */}}
 {{- if eq (include "technitium.managedEnabled" .) "true" -}}
 {{- $tls := .Values.cluster.managed.tls | default dict -}}
+{{- $cert := $tls.serverCertificate | default dict -}}
 {{- $deployment := include "technitium.primaryDeployment" . | fromYaml -}}
 {{- $pod := deepCopy $deployment.spec.template -}}
 {{- $_ := set $pod.metadata.labels "app.kubernetes.io/component" "cluster-member" -}}
@@ -36,11 +37,20 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
       {{- if eq $item.name "DNS_SERVER_DOMAIN" -}}
         {{- $item = dict "name" "DNS_SERVER_DOMAIN" "value" (printf "$(POD_NAME).%s" $.Values.cluster.domain) -}}
       {{- end -}}
+      {{- if and $cert.secretName (eq $item.name "DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PATH") -}}
+        {{- $item = dict "name" $item.name "value" (include "technitium.managedServerCertificatePath" $) -}}
+      {{- end -}}
       {{- $env = append $env $item -}}
     {{- end -}}
     {{- if or $tls.caSecretName $tls.caConfigMapName -}}
       {{- $env = append $env (dict "name" "SSL_CERT_FILE" "value" "/peer-ca/ca.crt") -}}
       {{- $_ := set $container "volumeMounts" (concat $container.volumeMounts (include "technitium.managedCaMount" $ | fromYamlArray)) -}}
+    {{- end -}}
+    {{- if $cert.secretName -}}
+      {{- $_ := set $container "volumeMounts" (append $container.volumeMounts (dict "name" "managed-server-tls" "mountPath" "/peer-tls" "readOnly" true)) -}}
+      {{- if $cert.passwordSecretName -}}
+        {{- $env = append $env (dict "name" "DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" $cert.passwordSecretName "key" ($cert.passwordKey | default "password")))) -}}
+      {{- end -}}
     {{- end -}}
     {{- $_ := set $container "env" $env -}}
     {{- $containers = append $containers $container -}}
@@ -52,6 +62,12 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
   {{- if eq $volume.name "logs" -}}{{- $volumes = append $volumes $volume -}}{{- end -}}
 {{- end -}}
 {{- $volumes = concat $volumes (include "technitium.managedCaVolume" . | fromYamlArray) -}}
+{{- if $cert.secretName -}}
+  {{/* A nested path ends in a regular file, so .NET observes renewed file timestamps. */}}
+  {{- $key := $cert.key | default "keystore.p12" -}}
+  {{- $items := list (dict "key" $key "path" (trimPrefix "/peer-tls/" (include "technitium.managedServerCertificatePath" .))) -}}
+  {{- $volumes = append $volumes (dict "name" "managed-server-tls" "secret" (dict "secretName" $cert.secretName "defaultMode" 288 "items" $items)) -}}
+{{- end -}}
 {{- $_ := set $pod.spec "volumes" $volumes -}}
 {{- $p := .Values.persistence | default dict -}}
 apiVersion: apps/v1

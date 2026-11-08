@@ -118,6 +118,22 @@ member resource suffixes and hashes long names to avoid collisions.
 {{- if or $tls.caSecretName $tls.caConfigMapName -}}
 {{- if not (regexMatch "^[a-zA-Z0-9._-]+$" (toString ($tls.caKey | default "ca.crt"))) -}}{{ fail "cluster.managed.tls.caKey must be a valid Secret key" }}{{- end -}}
 {{- end -}}
+{{- $cert := $tls.serverCertificate | default dict -}}
+{{- if not (kindIs "map" $cert) -}}{{ fail "cluster.managed.tls.serverCertificate must be a map" }}{{- end -}}
+{{- range $field := list "secretName" "passwordSecretName" -}}
+{{- $value := get $cert $field -}}
+{{- if and $value (not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" (toString $value))) -}}{{ fail (printf "cluster.managed.tls.serverCertificate.%s must be a valid Secret name" $field) }}{{- end -}}
+{{- end -}}
+{{- if and $cert.passwordSecretName (not $cert.secretName) -}}{{ fail "serverCertificate.passwordSecretName requires serverCertificate.secretName" }}{{- end -}}
+{{- if $cert.secretName -}}
+{{- if or .Values.cluster.autoHttps .Values.config.webServiceUseSelfSignedCert -}}{{ fail "serverCertificate requires cluster.autoHttps=false and config.webServiceUseSelfSignedCert=false" }}{{- end -}}
+{{- if ne (include "technitium.httpsEnabled" .) "true" -}}{{ fail "serverCertificate requires config.webServiceEnableHttps=true" }}{{- end -}}
+{{- if not (regexMatch "^[a-zA-Z0-9._-]+$" (toString ($cert.key | default "keystore.p12"))) -}}{{ fail "serverCertificate.key must be a valid Secret key" }}{{- end -}}
+{{- if $cert.passwordSecretName -}}
+{{- if .Values.config.webServiceTlsCertificatePassword -}}{{ fail "set only one of serverCertificate.passwordSecretName and config.webServiceTlsCertificatePassword" }}{{- end -}}
+{{- if not (regexMatch "^[a-zA-Z0-9._-]+$" (toString ($cert.passwordKey | default "password"))) -}}{{ fail "serverCertificate.passwordKey must be a valid Secret key" }}{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if and (hasKey $m "bootstrapHttp") (not (kindIs "bool" $m.bootstrapHttp)) -}}{{ fail "cluster.managed.bootstrapHttp must be a boolean" }}{{- end -}}
 {{- if hasKey $m "updateTargetOrdinal" -}}{{ fail "cluster.managed.updateTargetOrdinal was removed; the primary observer now selects the primary Service endpoint" }}{{- end -}}
 {{- if not .Values.cluster.enabled -}}{{ fail "cluster.enabled must be true when cluster.managed.enabled is true" }}{{- end -}}
@@ -141,6 +157,10 @@ member resource suffixes and hashes long names to avoid collisions.
 {{- define "technitium.managedTlsVerify" -}}
 {{- $tls := .Values.cluster.managed.tls | default dict -}}
 {{- if hasKey $tls "verify" -}}{{ $tls.verify }}{{- else -}}true{{- end -}}
+{{- end -}}
+
+{{- define "technitium.managedServerCertificatePath" -}}
+/peer-tls/server/keystore.p12
 {{- end -}}
 
 {{- define "technitium.managedTlsEnv" -}}

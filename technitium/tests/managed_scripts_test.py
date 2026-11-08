@@ -49,6 +49,7 @@ class FakeApis:
         self.expected_totp = ""
         self.login_forms = []
         self.join_forms = []
+        self.settings_forms = []
 
     def workload(self, replicas):
         return {
@@ -137,6 +138,10 @@ class FakeApis:
                 raise TimeoutError("synthetic lost response after successful mutation")
             return FakeResponse({"status": "ok", "response": self.cluster_state(index)})
         if path == "/api/settings/set":
+            assert method == "POST"
+            form = urllib.parse.parse_qs(req.data.decode())
+            assert set(form) == {"zoneTransferAllowedNetworks", "notifyAllowedNetworks"}
+            self.settings_forms.append((index, form))
             return FakeResponse({"status": "ok"})
         raise AssertionError(path)
 
@@ -254,6 +259,13 @@ class ManagedScriptsTests(unittest.TestCase):
         self.run_script("managed-cluster.py", fake)
         self.assertEqual(self.mutations(fake), [])
         self.assertEqual(fake.token_reads, 0)
+        self.assertFalse(any(path == "/api/settings/get" for _, path, _ in fake.calls))
+
+    def test_validates_all_members_before_changing_settings(self):
+        fake = FakeApis(count=1, initialized=True, joined=1)
+        fake.registered.remove(1)
+        self.rejected(fake, "conflicts with the current primary")
+        self.assertEqual(fake.settings_forms, [])
 
     def test_expansion_joins_only_unregistered_members(self):
         fake = FakeApis(count=2, initialized=True, joined=1)

@@ -6,8 +6,10 @@
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import os
 from pathlib import Path
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,33 @@ class TLSHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass
+
+
+class ProjectionTests(unittest.TestCase):
+    def test_directory_projection_exposes_renewal_timestamp(self):
+        # Simulate kubelet's atomic ..data swap with dummy data, not PKCS#12 keys.
+        # Technitium's Unix FileInfo timestamp reads lstat of the final component.
+        with tempfile.TemporaryDirectory(prefix='technitium-projection-test-') as directory:
+            root = Path(directory)
+            for revision, mtime in (('v1', 100), ('v2', 200)):
+                target = root / revision
+                (target / 'server').mkdir(parents=True)
+                for path in (target / 'keystore.p12', target / 'server/keystore.p12'):
+                    path.write_text(revision)
+                    os.utime(path, (mtime, mtime))
+            (root / '..data').symlink_to('v1', target_is_directory=True)
+            (root / 'keystore.p12').symlink_to('..data/keystore.p12')
+            (root / 'server').symlink_to('..data/server', target_is_directory=True)
+            flat, nested = root / 'keystore.p12', root / 'server/keystore.p12'
+            flat_mtime = flat.lstat().st_mtime_ns
+            self.assertEqual(nested.lstat().st_mtime, 100)
+            (root / '..data_tmp').symlink_to('v2', target_is_directory=True)
+            (root / '..data_tmp').replace(root / '..data')
+            self.assertEqual(flat.read_text(), 'v2')
+            self.assertEqual(nested.read_text(), 'v2')
+            self.assertEqual(flat.lstat().st_mtime_ns, flat_mtime)
+            self.assertTrue(stat.S_ISREG(nested.lstat().st_mode))
+            self.assertEqual(nested.lstat().st_mtime, 200)
 
 
 class TLSTests(unittest.TestCase):

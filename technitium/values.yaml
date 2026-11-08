@@ -317,6 +317,17 @@ cluster:
       caSecretName: ""
       caConfigMapName: ""
       caKey: ca.crt
+      # Existing PKCS#12 server certificate; mounted only in managed members.
+      # Requires autoHttps=false and config.webServiceEnableHttps=true.
+      # The selected key is mounted at /peer-tls/server/keystore.p12 without subPath.
+      # The nested path lets Technitium detect Secret renewal timestamps.
+      serverCertificate:
+        secretName: ""
+        key: keystore.p12
+        # Optional for an unencrypted PKCS#12 file. Keep this password stable
+        # during renewal; Technitium persists it in its web-service settings.
+        passwordSecretName: ""
+        passwordKey: password
     # The primary observer polls Technitium and owns the -primary Service route.
     # A dedicated read-only cluster-state credential is recommended. Empty
     # secretName/passwordKey reuse the chart administrator Secret and key.
