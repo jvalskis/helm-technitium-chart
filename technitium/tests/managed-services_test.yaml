@@ -28,17 +28,15 @@ release:
   name: dns
   namespace: test
 tests:
-  - it: keeps the legacy web alias pinned to member zero
+  - it: keeps the web Service name in managed mode
     template: service.yaml
     documentIndex: 0
     asserts:
+      - hasDocuments:
+          count: 2
       - equal:
-          path: spec.selector
-          value:
-            app.kubernetes.io/name: technitium
-            app.kubernetes.io/instance: dns
-            app.kubernetes.io/component: cluster-member
-            statefulset.kubernetes.io/pod-name: dns-technitium-cluster-0
+          path: metadata.name
+          value: dns-technitium-web
 
   - it: routes shared DNS queries to every cluster member
     template: service.yaml
@@ -55,6 +53,8 @@ tests:
     template: service-managed.yaml
     documentIndex: 1
     asserts:
+      - hasDocuments:
+          count: 4
       - equal:
           path: metadata.name
           value: dns-technitium-cluster-0-web
@@ -97,12 +97,12 @@ tests:
             statefulset.kubernetes.io/pod-name: dns-technitium-cluster-2
 
   - it: selects the primary label managed by the observer on live Pods
-    template: service-managed.yaml
-    documentIndex: 4
+    template: service.yaml
+    documentIndex: 0
     asserts:
       - equal:
           path: metadata.name
-          value: dns-technitium-primary
+          value: dns-technitium-web
       - equal:
           path: spec.selector
           value:
@@ -110,3 +110,128 @@ tests:
             app.kubernetes.io/instance: dns
             app.kubernetes.io/component: cluster-member
             technitium.io/cluster-role: primary
+      - contains:
+          path: spec.ports
+          content:
+            name: web-ui-http
+            port: 5380
+            targetPort: web-ui-http
+            protocol: TCP
+      - contains:
+          path: spec.ports
+          content:
+            name: web-ui-https
+            port: 53443
+            targetPort: web-ui-https
+            protocol: TCP
+
+  - it: exposes configured web ports on the web Service
+    template: service.yaml
+    documentIndex: 0
+    set:
+      ports.webHttp: 8080
+      ports.webHttps: 8443
+    asserts:
+      - contains:
+          path: spec.ports
+          content:
+            name: web-ui-http
+            port: 8080
+            targetPort: web-ui-http
+            protocol: TCP
+      - contains:
+          path: spec.ports
+          content:
+            name: web-ui-https
+            port: 8443
+            targetPort: web-ui-https
+            protocol: TCP
+
+  - it: keeps enabled DoH proxy ports available to managed ingress
+    template: service.yaml
+    documentIndex: 0
+    set:
+      ports.dohHttpProxy.enabled: true
+      ports.dohProxy.enabled: true
+    asserts:
+      - contains:
+          path: spec.ports
+          content:
+            name: doh-proxy-http
+            port: 80
+            targetPort: doh-proxy-http
+            protocol: TCP
+      - contains:
+          path: spec.ports
+          content:
+            name: doh-proxy
+            port: 8053
+            targetPort: doh-proxy
+            protocol: TCP
+
+  - it: preserves admin exposure settings on the managed web Service
+    template: service.yaml
+    documentIndex: 0
+    set:
+      service.web.type: LoadBalancer
+      service.labels:
+        shared-label: shared-value
+      service.web.labels:
+        endpoint: admin
+      service.web.annotations:
+        example.com/exposure: private
+    asserts:
+      - equal:
+          path: metadata.name
+          value: dns-technitium-web
+      - equal:
+          path: spec.type
+          value: LoadBalancer
+      - equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: web
+      - equal:
+          path: metadata.labels["shared-label"]
+          value: shared-value
+      - equal:
+          path: metadata.labels.endpoint
+          value: admin
+      - equal:
+          path: metadata.annotations["example.com/exposure"]
+          value: private
+
+  - it: preserves the standalone web Service
+    template: service.yaml
+    documentIndex: 0
+    set:
+      cluster.managed.enabled: false
+      cluster.enabled: false
+    asserts:
+      - equal:
+          path: metadata.name
+          value: dns-technitium-web
+      - equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: web
+      - notExists:
+          path: spec.selector["technitium.io/cluster-role"]
+
+  - it: preserves the independent-member web Service
+    template: service.yaml
+    documentIndex: 0
+    set:
+      cluster.managed.enabled: false
+      cluster.primaryReleaseName: primary
+    asserts:
+      - equal:
+          path: metadata.name
+          value: dns-technitium-web
+      - notExists:
+          path: spec.selector["technitium.io/cluster-role"]
+      - contains:
+          path: spec.ports
+          content:
+            name: dns-tcp
+            port: 53
+            targetPort: dns-tcp
+            protocol: TCP

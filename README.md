@@ -74,13 +74,13 @@ The following table lists the configurable parameters of the Technitium chart an
 | ports.dhcp.enabled | Enable DHCP server (UDP/67). | `false` | No |
 | **Platform Services** | | | |
 | serviceAccount.create | Create a dedicated ServiceAccount. | `true` | No |
-| ingress.enabled | Toggle for the bundled ingress template. | `false` | No |
+| ingress.enabled | Enable ingress; managed mode targets the observed primary, other modes target the web Service. | `false` | No |
 | ingress.className | IngressClass name (e.g. `"nginx"`, `"traefik"`). | `""` | No |
 | ingress.annotations | Annotations to add to the ingress resource. | `{}` | No |
 | service.labels | Extra labels on both Services (e.g. `lb-pool: aws` for a Cilium LB-IPAM `serviceSelector`). Chart-managed keys cannot be overridden. | `{}` | No |
-| service.web.type | Service type for the web console Service. | `ClusterIP` | No |
-| service.web.labels | Extra labels on the web Service only, merged over `service.labels`. | `{}` | No |
-| service.web.annotations | Annotations on the web Service. | `{}` | No |
+| service.web.type | Admin Service type (`-web`); selects the observed primary in managed mode. | `ClusterIP` | No |
+| service.web.labels | Extra labels on the admin Service, merged over `service.labels`. | `{}` | No |
+| service.web.annotations | Annotations on the admin Service. | `{}` | No |
 | service.dns.type | Service type for the DNS Service. | `LoadBalancer` | No |
 | service.dns.labels | Extra labels on the DNS Service only, merged over `service.labels`. | `{}` | No |
 | service.dns.annotations | Annotations on the DNS Service. | `{}` | No |

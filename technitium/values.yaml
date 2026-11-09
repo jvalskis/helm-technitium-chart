@@ -138,6 +138,7 @@ serviceAccount:
   name: ""
 
 ingress:
+  # Managed mode routes to the observed primary; other modes use the web Service.
   enabled: false
   # IngressClass name for the ingress resource (e.g. "nginx", "traefik").
   className: ""
@@ -158,14 +159,15 @@ ingress:
 # behind an Ingress / reverse proxy with TLS while the DNS protocol
 # ports are exposed directly via a LoadBalancer (or NodePort, etc.).
 service:
-  # Extra labels added to BOTH Services' metadata, on top of the chart's own
+  # Extra labels added to the admin and DNS Services, on top of the chart's own
   # labels. Useful for label-selecting controllers, e.g. a Cilium LB-IPAM
   # pool `serviceSelector`. Keys the chart already sets cannot be overridden.
   # Example:
   #   labels:
   #     lb-pool: aws
   labels: {}
-  # Service for the web management console and DoH HTTP proxy ports.
+  # Admin Service (-web); selects the observed primary in managed mode.
+  # In managed mode, also use it for DNS updates; queries go to -dns.
   # Defaults to ClusterIP so it can be fronted by `ingress` with TLS.
   web:
     type: ClusterIP
@@ -332,7 +334,7 @@ cluster:
         # during renewal; Technitium persists it in its web-service settings.
         passwordSecretName: ""
         passwordKey: password
-    # The primary observer polls Technitium and owns the -primary Service route.
+    # The primary observer polls Technitium and owns the -web Service route.
     # A dedicated read-only cluster-state credential is recommended. Empty
     # secretName/passwordKey reuse the chart administrator Secret and key.
     roleObserver:

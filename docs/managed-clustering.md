@@ -32,38 +32,18 @@ cluster:
         passwordKey: password
 ```
 
-The server certificate Secret must contain a PKCS#12 file. With TLS verification
-enabled, its DNS SANs must cover every member, for example `*.cluster.example.com`.
-A shared Secret gives all members the same key.
-
-`config.webServiceTlsCertificatePath` controls both the web/API certificate path
-and where the Secret file is projected. The chart mounts its grandparent directory
-read-only, without `subPath`; the nested file exposes renewal timestamps to
-Technitium. For `/peer-tls/server/keystore.p12`, the mount is `/peer-tls` and the
-Secret item is `server/keystore.p12`.
-
-With a server Secret, use an absolute file path with at least two directories.
-The chart rejects parent traversal (`..`) and projected directories beginning
-with `..` (reserved by Kubernetes). Filenames and extensions are unrestricted.
-Choose a mount location suited to your volume layout; the chart does not check
-for overlapping mounts.
-Existing managed installations should set `/peer-tls/server/keystore.p12` to
-preserve the previously fixed location.
-
-The CA bundle adds trust; it does not issue server certificates. Without
-`serverCertificate.secretName`, provision a PFX on each PVC and set
-`config.webServiceTlsCertificatePath` instead. Existing servers must have their
-saved TLS path/password aligned; environment values initialize fresh storage only.
-These settings configure Technitium's web/API HTTPS listener. Ingress TLS is separate.
-Use a real cluster domain with working DNS resolution; Technitium 15.6's reserved
-`.test` handling can fail native DANE/DNSSEC lookups even with a trusted certificate.
+The server Secret must contain PKCS#12 data, with TLS verification enabled. Its
+certificate must cover every member's DNS name. Set
+`config.webServiceTlsCertificatePath` to an absolute nested path, such as
+`/peer-tls/server/keystore.p12`, for automatic certificate reload. Existing servers
+must have matching saved certificate paths and passwords. This certificate serves
+the web UI and cluster API; ingress TLS is separate.
 
 | Service | Purpose |
 | --- | --- |
 | `dns-technitium-cluster-N-web` | Stable peer address for member N |
-| `dns-technitium-web` | Alias for ordinal zero |
 | `dns-technitium-dns` | Client queries across all ready members |
-| `dns-technitium-primary` | Single-member ClusterIP for DNS UPDATE on port 53 and HTTPS API writes on 53443 |
+| `dns-technitium-web` | Observed primary for DNS UPDATE on 53 and web/API access on 5380/53443 |
 
 ### Admin UI through ingress
 
@@ -81,62 +61,29 @@ ingress:
           port: 5380
 ```
 
-The ingress forwards HTTP to `-web`, the ordinal-zero
-alias. Its GUI can manage the cluster even when another member is primary.
+The ingress forwards HTTP to `-web`. Until a primary is identified, this
+route has no backend. For bootstrap or recovery,
+access a member's `-cluster-N-web` Service directly. A primary change may require
+logging in again. Ingress TLS configuration is unchanged.
 
-> [!NOTE]
-> This UI route requires ordinal zero to be available.
+`service.web` configures the admin Service in every mode.
 
 ## Primary routing and peer TLS
 
-A one-replica observer Deployment reads cluster state from the peer Services.
-It labels the primary Pod only when a strict majority of configured members agree
-and that primary reports itself. The `-primary` Service has a fixed selector for
-`technitium.io/cluster-role: primary`. The observer clears old primary labels
-before assigning a new one; conflicting or insufficient reports clear all of them.
-The label is absent from the StatefulSet template, so new Pods need observation.
-One Kubernetes Lease coordinates overlapping observer Pods. Pod writes check
-ownership, UID, resource version, and an observer annotation; takeover or an
-uncertain write invalidates older requests. Replacement may wait up to 30 seconds
-for Lease expiry, plus polling. RBAC permits get/patch only on this Lease and the
-named member Pods. Helm owns the Service and does not manage the Lease's state.
-It does not promote or rejoin members. With two members, a promotion cannot
-restore writes until the former primary rejoins.
+`-web` follows the primary reported by a strict majority of members, including
+the primary itself. The observer uses the admin Secret by default; configure
+`cluster.managed.roleObserver` for separate credentials and polling. It does not
+promote or rejoin nodes. Routing can remain stale if the observer stops.
 
-The observer reuses the chart administrator Secret by default. For a separate
-read-only cluster-state user, set `roleObserver.secretName`, `username`, and
-`passwordKey`. Alternatively, set `secretName` and `tokenKey` for an API token
-valid on every member with Administration View permission; this avoids password
-login for a user with 2FA. The observer reuses sessions and reloads changed Secret
-contents. It polls every 10 seconds by default (`pollSeconds`: 5-300).
-Managed hooks send `cluster.primaryNodeTotp` to login and join, but a saved code
-expires; use an automation account for unattended upgrades.
+Peer API calls verify TLS against member DNS names by default
+(`cluster.managed.tls.verify: true`). Supply a private CA through `caConfigMapName`
+or `caSecretName`, with `caKey`; otherwise system CAs apply. Restart the observer
+and members after CA rotation. Explicitly setting `verify: false` disables
+verification for managed API calls and joins.
 
-Peer API calls validate certificate chains, expiry, and member DNS names by
-default (`cluster.managed.tls.verify: true`). Connections use peer Service IPs
-with the member name as TLS SNI. Select a CA bundle with `caConfigMapName` or
-`caSecretName` (one source only); `caKey` selects its PEM data entry. Without
-either source, the client image's system CA store is used. The bundle is mounted
-at `/peer-ca/ca.crt` in the coordinator, observer, and managed servers; servers
-use `SSL_CERT_FILE` for verified initial joins. Restart
-the observer and member Pods after rotating the CA bundle. Technitium's native
-DANE checks remain unchanged.
-
-For generated self-signed certificates without a trusted CA, explicitly set
-`cluster.managed.tls.verify: false`. The setting also controls
-`ignoreCertificateErrors` on managed joins. HTTPS failures never trigger HTTP
-fallback or credential-bearing redirects. If the observer stops or cannot patch the
-Pods, a stale primary label can remain: monitor its logs and isolate an old
-primary during recovery. Earlier managed previews must remove
-`updateTargetOrdinal` from values before upgrading.
-
-Use IPv4 peer Service ClusterIPs. Managed mode requires persistence and
-`cluster.podNetworks`; it does not support bootstrap zones or
-`persistence.existingClaim`. Create zones on the active primary and enroll them
-in the cluster catalog. PVCs are named
-`config-storage-<StatefulSet name>-<ordinal>` and remain after scale-down or
-StatefulSet deletion. Plan a separate migration to change claim names or
-storage settings.
+Managed mode requires IPv4 peer Service addresses, persistence and
+`cluster.podNetworks`. Bootstrap zones and `persistence.existingClaim` are
+unsupported. Enroll replicated zones in the cluster catalog.
 
 ## Install, expand, and update
 
@@ -182,7 +129,7 @@ Services until recovery is complete.
    `https://dns-technitium-cluster-1.cluster.example.com:53443/` and the IP is
    from `dns-technitium-cluster-1-web`.
 2. Set the former primary's **own node IP** to its `-0-web` Service IP. Never
-   save a Pod IP or the movable `-primary` Service IP as a node address. If an
+   save a Pod IP or the movable `-web` Service IP as a node address. If an
    unstable address was saved, use Technitium's
    [Update Node IP Addresses API](https://github.com/TechnitiumSoftware/DnsServer/blob/v15.6.0/APIDOCS.md#update-node-ip-addresses),
    wait for membership to reflect it, and retry.
@@ -191,7 +138,7 @@ Services until recovery is complete.
    copy on the **former primary only**. For self-signed TLS, select **Ignore
    Certificate Errors** in the manual join form.
 4. Confirm all members agree on membership. Wait for the observer to route
-   `-primary` to the promoted Pod, check its endpoint and DNS answers, then
+   `-web` to the promoted Pod, check its endpoint and DNS answers, then
    restore client traffic.
 
 Helm rollback does not reverse Technitium promotion or persisted zone changes.
@@ -219,6 +166,6 @@ lets the hook inspect that member over HTTP during migration. Reset it to
    and its own stable peer Service IP.
 2. Intended zones are enrolled in the catalog. Check serials and representative
    records over UDP and TCP against each member's peer Service.
-3. Confirm `-primary` points to the observed primary. Change a test record
+3. Confirm `-web` points to the observed primary. Change a test record
    through it, confirm it on every member, restart Pods one at a time, and
    repeat the checks.

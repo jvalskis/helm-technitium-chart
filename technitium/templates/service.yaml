@@ -41,14 +41,14 @@ spec:
     {{- include "technitium.selectorLabels" . | nindent 4 }}
     {{- if eq (include "technitium.managedEnabled" .) "true" }}
     app.kubernetes.io/component: cluster-member
-    statefulset.kubernetes.io/pod-name: {{ include "technitium.managedMemberName" . }}-0
+    technitium.io/cluster-role: primary
     {{- end }}
   ports:
     - name: web-ui-http
       port: {{ .Values.ports.webHttp | default 5380 }}
       targetPort: web-ui-http
       protocol: TCP
-    {{- if eq (include "technitium.httpsEnabled" .) "true" }}
+    {{- if or (eq (include "technitium.managedEnabled" .) "true") (eq (include "technitium.httpsEnabled" .) "true") }}
     - name: web-ui-https
       port: {{ .Values.ports.webHttps | default 53443 }}
       targetPort: web-ui-https
