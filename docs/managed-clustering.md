@@ -10,14 +10,13 @@ PVC.
 
 ```yaml
 config:
-  adminPassword: replace-with-a-synthetic-test-password
   webServiceEnableHttps: true
   webServiceUseSelfSignedCert: false
+  webServiceTlsCertificatePath: /peer-tls/server/keystore.p12
 cluster:
   enabled: true
-  autoHttps: false # use the PKI-issued certificate
+  autoHttps: false
   domain: cluster.example.com
-  podNetworks: [10.244.0.0/16]
   managed:
     enabled: true
     initialize: false # override to true for the first install only
@@ -33,21 +32,23 @@ cluster:
         passwordKey: password
 ```
 
-For release `dns`, the Pods are `dns-technitium-cluster-0` through `-2`.
-The existing server certificate Secret supplies a PKCS#12 file. Its DNS SANs
-must cover every member, for example `*.cluster.example.com`; a shared wildcard
-Secret gives all members the same key. The chart mounts
-it read-only at `/peer-tls/server/keystore.p12`, overriding `config.webServiceTlsCertificatePath`.
-The password comes from the referenced Secret; omit `passwordSecretName` for an
-unencrypted file. These Secrets must exist in the release namespace.
+The server certificate Secret must contain a PKCS#12 file. With TLS verification
+enabled, its DNS SANs must cover every member, for example `*.cluster.example.com`.
+A shared Secret gives all members the same key.
 
-cert-manager can create this file with `keystores.pkcs12.create: true`,
-`profile: Modern2023`, and `passwordSecretRef`. Manage its Certificate separately
-and set `privateKey.rotationPolicy: Always`. The directory mount and nested file
-path expose renewed file timestamps to Technitium. A flat projected file symlink
-keeps its timestamp and prevents reload. Technitium checks for changes every
-60 seconds, in addition to Kubernetes projection delay; verify renewal and DANE
-records on your installation. Keep the keystore password stable during renewal.
+`config.webServiceTlsCertificatePath` controls both the web/API certificate path
+and where the Secret file is projected. The chart mounts its grandparent directory
+read-only, without `subPath`; the nested file exposes renewal timestamps to
+Technitium. For `/peer-tls/server/keystore.p12`, the mount is `/peer-tls` and the
+Secret item is `server/keystore.p12`.
+
+With a server Secret, use an absolute file path with at least two directories.
+The chart rejects parent traversal (`..`) and projected directories beginning
+with `..` (reserved by Kubernetes). Filenames and extensions are unrestricted.
+Choose a mount location suited to your volume layout; the chart does not check
+for overlapping mounts.
+Existing managed installations should set `/peer-tls/server/keystore.p12` to
+preserve the previously fixed location.
 
 The CA bundle adds trust; it does not issue server certificates. Without
 `serverCertificate.secretName`, provision a PFX on each PVC and set
@@ -63,6 +64,30 @@ Use a real cluster domain with working DNS resolution; Technitium 15.6's reserve
 | `dns-technitium-web` | Alias for ordinal zero |
 | `dns-technitium-dns` | Client queries across all ready members |
 | `dns-technitium-primary` | Single-member ClusterIP for DNS UPDATE on port 53 and HTTPS API writes on 53443 |
+
+### Admin UI through ingress
+
+The existing `ingress` values also work in managed mode:
+
+```yaml
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: dns-admin.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          port: 5380
+```
+
+The ingress forwards HTTP to `-web`, the ordinal-zero
+alias. Its GUI can manage the cluster even when another member is primary.
+
+> [!NOTE]
+> This UI route requires ordinal zero to be available.
+
+## Primary routing and peer TLS
 
 A one-replica observer Deployment reads cluster state from the peer Services.
 It labels the primary Pod only when a strict majority of configured members agree

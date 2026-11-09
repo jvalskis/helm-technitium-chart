@@ -23,6 +23,8 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 {{- if eq (include "technitium.managedEnabled" .) "true" -}}
 {{- $tls := .Values.cluster.managed.tls | default dict -}}
 {{- $cert := $tls.serverCertificate | default dict -}}
+{{- $certMount := "" -}}
+{{- if $cert.secretName -}}{{- $certMount = include "technitium.managedServerCertificateMount" . -}}{{- end -}}
 {{- $deployment := include "technitium.primaryDeployment" . | fromYaml -}}
 {{- $pod := deepCopy $deployment.spec.template -}}
 {{- $_ := set $pod.metadata.labels "app.kubernetes.io/component" "cluster-member" -}}
@@ -37,9 +39,6 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
       {{- if eq $item.name "DNS_SERVER_DOMAIN" -}}
         {{- $item = dict "name" "DNS_SERVER_DOMAIN" "value" (printf "$(POD_NAME).%s" $.Values.cluster.domain) -}}
       {{- end -}}
-      {{- if and $cert.secretName (eq $item.name "DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PATH") -}}
-        {{- $item = dict "name" $item.name "value" (include "technitium.managedServerCertificatePath" $) -}}
-      {{- end -}}
       {{- $env = append $env $item -}}
     {{- end -}}
     {{- if or $tls.caSecretName $tls.caConfigMapName -}}
@@ -47,7 +46,7 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
       {{- $_ := set $container "volumeMounts" (concat $container.volumeMounts (include "technitium.managedCaMount" $ | fromYamlArray)) -}}
     {{- end -}}
     {{- if $cert.secretName -}}
-      {{- $_ := set $container "volumeMounts" (append $container.volumeMounts (dict "name" "managed-server-tls" "mountPath" "/peer-tls" "readOnly" true)) -}}
+      {{- $_ := set $container "volumeMounts" (append $container.volumeMounts (dict "name" "managed-server-tls" "mountPath" $certMount "readOnly" true)) -}}
       {{- if $cert.passwordSecretName -}}
         {{- $env = append $env (dict "name" "DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" $cert.passwordSecretName "key" ($cert.passwordKey | default "password")))) -}}
       {{- end -}}
@@ -65,7 +64,7 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 {{- if $cert.secretName -}}
   {{/* A nested path ends in a regular file, so .NET observes renewed file timestamps. */}}
   {{- $key := $cert.key | default "keystore.p12" -}}
-  {{- $items := list (dict "key" $key "path" (trimPrefix "/peer-tls/" (include "technitium.managedServerCertificatePath" .))) -}}
+  {{- $items := list (dict "key" $key "path" (trimPrefix (printf "%s/" $certMount) (clean .Values.config.webServiceTlsCertificatePath))) -}}
   {{- $volumes = append $volumes (dict "name" "managed-server-tls" "secret" (dict "secretName" $cert.secretName "defaultMode" 288 "items" $items)) -}}
 {{- end -}}
 {{- $_ := set $pod.spec "volumes" $volumes -}}

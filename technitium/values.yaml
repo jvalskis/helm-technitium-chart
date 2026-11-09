@@ -27,7 +27,10 @@ config:
   # If true, the server generates a self-signed TLS certificate for the web console.
   webServiceUseSelfSignedCert: ""
 
-  # The full file path inside the container to a .pfx TLS certificate file.
+  # Full path to the web/API server's PKCS#12 (.pfx or .p12) certificate.
+  # With managed tls.serverCertificate.secretName, set a dedicated nested path
+  # such as /peer-tls/server/keystore.p12. The Secret mounts two directories above
+  # the file, without subPath.
   webServiceTlsCertificatePath: "/etc/dns/tls/cert.pfx"
 
   # The password required to open the .pfx TLS certificate file.
@@ -319,8 +322,9 @@ cluster:
       caKey: ca.crt
       # Existing PKCS#12 server certificate; mounted only in managed members.
       # Requires autoHttps=false and config.webServiceEnableHttps=true.
-      # The selected key is mounted at /peer-tls/server/keystore.p12 without subPath.
-      # The nested path lets Technitium detect Secret renewal timestamps.
+      # The selected key is mounted at config.webServiceTlsCertificatePath.
+      # Set that path explicitly, e.g. /peer-tls/server/keystore.p12. The chart
+      # mounts its grandparent directory without subPath for renewal detection.
       serverCertificate:
         secretName: ""
         key: keystore.p12

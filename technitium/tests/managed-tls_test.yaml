@@ -211,7 +211,7 @@ tests:
       cluster.autoHttps: false
       config.webServiceEnableHttps: true
       config.webServiceUseSelfSignedCert: false
-      config.webServiceTlsCertificatePath: /ignored.pfx
+      config.webServiceTlsCertificatePath: /peer-tls/server/keystore.p12
       cluster.managed.tls.serverCertificate.secretName: cluster-server-tls
       cluster.managed.tls.serverCertificate.key: custom.pfx
       cluster.managed.tls.serverCertificate.passwordSecretName: cluster-keystore-password

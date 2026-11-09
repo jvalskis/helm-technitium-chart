@@ -47,7 +47,7 @@ The following table lists the configurable parameters of the Technitium chart an
 | config.webServiceLocalAddresses | Comma-separated bind addresses for the web UI. | `""` | No |
 | config.webServiceEnableHttps | Enables HTTPS for the management UI. | `false` | No |
 | config.webServiceUseSelfSignedCert | Generates a self-signed cert for the UI when HTTPS is enabled. | `false` | No |
-| config.webServiceTlsCertificatePath | Path to the `.pfx` certificate inside the container. | `/etc/dns/tls/cert.pfx` | No |
+| config.webServiceTlsCertificatePath | Web/API PKCS#12 certificate path. With a managed server Secret, set a dedicated nested path such as `/peer-tls/server/keystore.p12`; the chart mounts the Secret at that path. | `/etc/dns/tls/cert.pfx` (PVC-based) | No |
 | config.webServiceTlsCertificatePassword | Password for the `.pfx` certificate. | `""` | No |
 | config.webServiceHttpToTlsRedirect | Forces HTTP → HTTPS redirects for the UI. | `false` | No |
 | config.optionalProtocolDnsOverHttp | Enables the DNS-over-HTTP helper protocol (port 8053). | `false` | No |
@@ -106,7 +106,8 @@ The following table lists the configurable parameters of the Technitium chart an
 | cluster.primaryReleaseName | Helm release name of the primary node (set this on secondaries; empty on the primary). | `""` | No |
 | cluster.primaryAdminSecretName | Primary administrator Secret used by a secondary's autoJoin Job. | Derived from primary release | No |
 | cluster.primaryAdminPasswordKey | Key in the primary administrator Secret. | `password` | No |
-| cluster.autoHttps | Force HTTPS + self-signed cert (required by DANE-EE node-to-node TLS). | `true` | No |
+| cluster.autoHttps | Force HTTPS and generate a self-signed certificate for cluster nodes. | `true` | No |
+| cluster.managed.tls.serverCertificate | Existing PKCS#12 Secret and optional password Secret for managed members; see [managed clustering](docs/managed-clustering.md). | Disabled | No |
 | cluster.autoJoin | Run a post-install Job that calls the cluster init/join API. | `true` | No |
 | cluster.adminUsername | Admin username used by the join Job to authenticate. | `"admin"` | No |
 | cluster.primaryNodeTotp | TOTP for the primary's admin user when 2FA is enabled. | `""` | No |

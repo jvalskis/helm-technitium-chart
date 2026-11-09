@@ -129,6 +129,7 @@ member resource suffixes and hashes long names to avoid collisions.
 {{- if or .Values.cluster.autoHttps .Values.config.webServiceUseSelfSignedCert -}}{{ fail "serverCertificate requires cluster.autoHttps=false and config.webServiceUseSelfSignedCert=false" }}{{- end -}}
 {{- if ne (include "technitium.httpsEnabled" .) "true" -}}{{ fail "serverCertificate requires config.webServiceEnableHttps=true" }}{{- end -}}
 {{- if not (regexMatch "^[a-zA-Z0-9._-]+$" (toString ($cert.key | default "keystore.p12"))) -}}{{ fail "serverCertificate.key must be a valid Secret key" }}{{- end -}}
+{{- $_ := include "technitium.managedServerCertificateMount" . -}}
 {{- if $cert.passwordSecretName -}}
 {{- if .Values.config.webServiceTlsCertificatePassword -}}{{ fail "set only one of serverCertificate.passwordSecretName and config.webServiceTlsCertificatePassword" }}{{- end -}}
 {{- if not (regexMatch "^[a-zA-Z0-9._-]+$" (toString ($cert.passwordKey | default "password"))) -}}{{ fail "serverCertificate.passwordKey must be a valid Secret key" }}{{- end -}}
@@ -159,8 +160,19 @@ member resource suffixes and hashes long names to avoid collisions.
 {{- if hasKey $tls "verify" -}}{{ $tls.verify }}{{- else -}}true{{- end -}}
 {{- end -}}
 
-{{- define "technitium.managedServerCertificatePath" -}}
-/peer-tls/server/keystore.p12
+{{/* Mount two levels above the certificate so the final component is a regular
+file after Secret projection. A flat projected file keeps its symlink timestamp
+on renewal, while subPath mounts do not receive Secret updates at all. */}}
+{{- define "technitium.managedServerCertificateMount" -}}
+{{- $path := .Values.config.webServiceTlsCertificatePath -}}
+{{- $error := "config.webServiceTlsCertificatePath must be an absolute file path with at least two directories (for example /peer-tls/server/keystore.p12)" -}}
+{{- if not (kindIs "string" $path) -}}{{ fail $error }}{{- end -}}
+{{- if or (not (hasPrefix "/" $path)) (hasSuffix "/" $path) (eq (last (splitList "/" $path)) ".") -}}{{ fail $error }}{{- end -}}
+{{- if has ".." (splitList "/" $path) -}}{{ fail "config.webServiceTlsCertificatePath must not contain '..' components when projecting a Secret" }}{{- end -}}
+{{- $mount := dir (dir $path) -}}
+{{- if eq $mount "/" -}}{{ fail $error }}{{- end -}}
+{{- if hasPrefix ".." (base (dir $path)) -}}{{ fail "config.webServiceTlsCertificatePath cannot project a directory beginning with '..' in a Secret volume" }}{{- end -}}
+{{- $mount -}}
 {{- end -}}
 
 {{- define "technitium.managedTlsEnv" -}}
