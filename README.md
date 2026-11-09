@@ -47,7 +47,7 @@ The following table lists the configurable parameters of the Technitium chart an
 | config.webServiceLocalAddresses | Comma-separated bind addresses for the web UI. | `""` | No |
 | config.webServiceEnableHttps | Enables HTTPS for the management UI. | `false` | No |
 | config.webServiceUseSelfSignedCert | Generates a self-signed cert for the UI when HTTPS is enabled. | `false` | No |
-| config.webServiceTlsCertificatePath | Web/API PKCS#12 certificate path. With a managed server Secret, set a dedicated nested path such as `/peer-tls/server/keystore.p12`; the chart mounts the Secret at that path. | `/etc/dns/tls/cert.pfx` (PVC-based) | No |
+| config.webServiceTlsCertificatePath | Web/API PKCS#12 certificate path. With a managed server Secret, set a dedicated nested path such as `/peer-tls/server/keystore.p12`; the chart mounts the Secret at that path. | `/etc/dns/tls/cert.pfx` | No |
 | config.webServiceTlsCertificatePassword | Password for the `.pfx` certificate. | `""` | No |
 | config.webServiceHttpToTlsRedirect | Forces HTTP → HTTPS redirects for the UI. | `false` | No |
 | config.optionalProtocolDnsOverHttp | Enables the DNS-over-HTTP helper protocol (port 8053). | `false` | No |
@@ -78,9 +78,9 @@ The following table lists the configurable parameters of the Technitium chart an
 | ingress.className | IngressClass name (e.g. `"nginx"`, `"traefik"`). | `""` | No |
 | ingress.annotations | Annotations to add to the ingress resource. | `{}` | No |
 | service.labels | Extra labels on both Services (e.g. `lb-pool: aws` for a Cilium LB-IPAM `serviceSelector`). Chart-managed keys cannot be overridden. | `{}` | No |
-| service.web.type | Admin Service type (`-web`); selects the observed primary in managed mode. | `ClusterIP` | No |
-| service.web.labels | Extra labels on the admin Service, merged over `service.labels`. | `{}` | No |
-| service.web.annotations | Annotations on the admin Service. | `{}` | No |
+| service.web.type | Service type for the web console Service. | `ClusterIP` | No |
+| service.web.labels | Extra labels on the web Service only, merged over `service.labels`. | `{}` | No |
+| service.web.annotations | Annotations on the web Service. | `{}` | No |
 | service.dns.type | Service type for the DNS Service. | `LoadBalancer` | No |
 | service.dns.labels | Extra labels on the DNS Service only, merged over `service.labels`. | `{}` | No |
 | service.dns.annotations | Annotations on the DNS Service. | `{}` | No |

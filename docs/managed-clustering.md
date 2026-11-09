@@ -87,85 +87,61 @@ unsupported. Enroll replicated zones in the cluster catalog.
 
 ## Install, expand, and update
 
-A managed upgrade is `helm upgrade` with `cluster.managed.enabled: true`.
-Pod template changes roll existing members automatically, highest ordinal
-first, one at a time. Increasing `secondaries` creates new Pods. Kubernetes
-waits for TCP readiness between members; the post-upgrade hook checks
-Technitium membership after the rollout. A promoted primary may be the
-highest ordinal and restart first. TCP readiness does not prove replication;
-verify DNS answers and zone serials after each upgrade.
-
-1. Keep `initialize: false` in saved values. For the first install, pass
-   `--set cluster.managed.initialize=true`. Upgrades ignore this flag, but a
-   later fresh install would honor a retained `true` value.
-2. To add members, increase `secondaries` and run Helm with hooks enabled. The
-   pre-hook rejects scale-down, naming changes, and cluster-domain changes.
-   The post-hook checks Technitium's saved membership and joins new members.
-3. For image or Pod template changes, run Helm with `--wait` and check the
-   coordinator result, membership, replication, and DNS answers afterward.
-
-The default TCP readiness probe allows the post-hook to run; Ready does not
-mean joined. The shared `-dns` Service can route to a new Pod before the hook
-verifies it. Keep production traffic away during installation, expansion, and
-empty-PVC recovery. Do not use `--no-hooks` or a render-only deployment path for
-managed changes.
-
-If installation fails and the retry is an upgrade, inspect ordinal zero's
-Technitium state. If it is unclustered, initialize it deliberately in the UI
-with the configured domain and its `-0-web` Service IP, then retry Helm. If it
-is clustered, the hook verifies the saved state. Do not use reinstall as a
-recovery shortcut. Conflicting identities, foreign membership, and a member
-registered in the cluster but missing local state require manual recovery.
+- **Install:** keep `cluster.managed.initialize: false` in saved values; pass
+  `--set cluster.managed.initialize=true` for the first install only. Upgrades
+  never initialize an unclustered server.
+- **Expand:** increase `cluster.managed.secondaries`. Hooks verify saved
+  membership and join new members; scale-down, naming and domain changes are
+  rejected.
+- **Upgrade:** use `helm upgrade --wait` with hooks enabled. Pod changes roll
+  highest ordinal first, regardless of primary role. The post-hook checks
+  membership after the rollout. Render-only deployment and `--no-hooks` are
+  unsupported.
+- **Traffic:** TCP readiness does not prove membership or replication. Keep
+  client traffic off `-dns` during installation, expansion and empty-PVC
+  recovery; new Pods can receive queries before joining.
+- **Failed install:** if ordinal zero is unclustered, initialize it in
+  Technitium's UI with the configured domain and its peer Service IP, then retry
+  Helm. Conflicting identities, foreign membership or lost member state require
+  manual recovery.
 
 ## Promote a member
 
-Technitium removes the former primary from membership during promotion, but its
-Pod can remain TCP Ready. Keep client queries and updates off the managed
-Services until recovery is complete.
+1. Pause client traffic; promotion detaches the former primary while its Pod
+   may still receive queries.
+2. Promote the chosen secondary in Technitium.
+3. Rejoin the former primary through the UI using the new primary's member URL
+   and peer Service IP. Example: `https://dns-technitium-cluster-1.cluster.example.com:53443/`
+   and the IP of `dns-technitium-cluster-1-web`.
+4. Set the rejoining member's own node IP to its `-cluster-N-web` Service IP.
+   Do not use a Pod IP or the shared `-web` address. If stale zones block rejoin,
+   verify and back up their current copies on the new primary before deleting
+   stale copies from the former primary.
+5. Run the [cutover checks](#verify-before-client-cutover) before resuming traffic.
 
-1. Promote the chosen secondary in Technitium. Rejoin the former primary through
-   the UI using the new primary's cluster node URL and peer Service IP. For
-   ordinal one in the example, the URL is
-   `https://dns-technitium-cluster-1.cluster.example.com:53443/` and the IP is
-   from `dns-technitium-cluster-1-web`.
-2. Set the former primary's **own node IP** to its `-0-web` Service IP. Never
-   save a Pod IP or the movable `-web` Service IP as a node address. If an
-   unstable address was saved, use Technitium's
-   [Update Node IP Addresses API](https://github.com/TechnitiumSoftware/DnsServer/blob/v15.6.0/APIDOCS.md#update-node-ip-addresses),
-   wait for membership to reflect it, and retry.
-3. If a stale local copy of the cluster zone blocks the join, verify that the
-   new primary has the zone and its records, back it up, then delete the stale
-   copy on the **former primary only**. For self-signed TLS, select **Ignore
-   Certificate Errors** in the manual join form.
-4. Confirm all members agree on membership. Wait for the observer to route
-   `-web` to the promoted Pod, check its endpoint and DNS answers, then
-   restore client traffic.
-
-Helm rollback does not reverse Technitium promotion or persisted zone changes.
+Helm rollback does not undo promotion or persisted data changes.
 
 ## Migrate a standalone primary
 
-The chart does not move or rename a standalone PVC. Prepare
-`config-storage-<StatefulSet name>-0` by copying, cloning, or rebinding the old
-volume after stopping the old server. Check the storage driver's behavior and
-keep an independent backup. Do not mount the same writable data twice.
-
-Align the saved server identity and node IP with ordinal zero and its `-0-web`
-Service; environment variables do not rename persisted identity. Start with
-`secondaries: 0` and verify data and updates before expanding. A new Helm
-release can use `initialize: true` on its first install. Converting an existing
-release is an upgrade: initialize through Technitium's UI, then rerun Helm.
-If ordinal zero uses the old standalone server's saved configuration and HTTPS
-is still disabled, temporarily set `cluster.managed.bootstrapHttp: true`. This
-lets the hook inspect that member over HTTP during migration. Reset it to
-`false` after enabling HTTPS. Other members always use HTTPS.
+1. Back up and stop the old server. Copy, clone or rebind its volume to
+   `config-storage-<StatefulSet name>-0`; the chart does not adopt arbitrary claim
+   names. Never mount the same data writable in both servers.
+2. Start with `secondaries: 0`. Align the saved identity and node IP with ordinal
+   zero and its `-0-web` Service; environment variables do not replace saved identity.
+3. For HTTP-only source data, temporarily enable `cluster.managed.bootstrapHttp`.
+   Disable it after enabling HTTPS.
+4. For a new release, use the first-install flag above. For an existing release,
+   initialize through Technitium's UI, then rerun Helm.
+5. Verify migrated data and updates before expanding. Enroll imported zones in
+   the cluster catalog.
 
 ## Verify before client cutover
 
-1. Every member reports the same domain and member list, exactly one primary,
-   and its own stable peer Service IP.
-2. Intended zones are enrolled in the catalog. Check serials and representative
-   records over UDP and TCP against each member's peer Service.
-3. Confirm `-web` points to the observed primary. Change a test record
-   through it, confirm it on every member, restart Pods one at a time, and
-   repeat the checks.
+- **Membership:** matching domain and member lists, exactly one primary, and
+  each member's own peer Service IP.
+- **Replication:** required zones enrolled in the catalog; matching SOA serials
+  and representative records over UDP and TCP on every member.
+- **Routing:** `-web` targets the primary; a test update through it replicates
+  to every member. Query the client-facing DNS endpoint over UDP and TCP.
+- **Persistence:** restart members one at a time; confirm retained PVCs/data
+  and repeat the checks.
