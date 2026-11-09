@@ -38,8 +38,8 @@
 
 4. 🧩 Cluster Mode (zone: {{ .Values.cluster.domain }}):
 
-   This node's web ClusterIP:
-     kubectl get svc --namespace {{ .Release.Namespace }} {{ include "technitium.fullname" . }}-web -o jsonpath='{.spec.clusterIP}'; echo
+   {{ if eq (include "technitium.managedEnabled" .) "true" }}Ordinal 0's{{ else }}This node's{{ end }} web ClusterIP:
+   kubectl get svc --namespace {{ .Release.Namespace }} {{ if eq (include "technitium.managedEnabled" .) "true" }}{{ include "technitium.managedMemberName" . }}-0-web{{ else }}{{ include "technitium.fullname" . }}-web{{ end }} -o jsonpath='{.spec.clusterIP}'; echo
 
    List all sibling cluster members in the namespace:
      kubectl get svc --namespace {{ .Release.Namespace }} -l technitium.io/cluster-domain={{ .Values.cluster.domain | replace "." "-" | trunc 63 | trimSuffix "-" }}
@@ -50,7 +50,21 @@
    persistence; see README "Running without persistence".
 {{- end }}
 
-{{- if .Values.cluster.autoJoin }}
+{{- if eq (include "technitium.managedEnabled" .) "true" }}
+
+   Managed members: {{ add 1 (int .Values.cluster.managed.secondaries) }} StatefulSet pods.
+   Cluster creation requires cluster.managed.initialize=true on a fresh install.
+   Upgrades never initialize an unclustered member; inspect/recover it explicitly.
+   Saved Technitium roles govern subsequent runs.
+   The post-install/post-upgrade coordinator runs after TCP readiness:
+     kubectl logs --namespace {{ .Release.Namespace }} job/{{ include "technitium.managedHookName" . }}-cluster -f
+
+   The admin and DNS update Service is {{ include "technitium.fullname" . }}-web.
+   The primary observer routes it after verifying Technitium membership.
+   Verify membership, required zones, UDP/TCP answers and replication before
+   sending clients to the shared cluster DNS Service. See
+   https://github.com/Bugs5382/helm-technitium-chart/blob/main/docs/managed-clustering.md
+{{- else if .Values.cluster.autoJoin }}
 
    The post-install Job `{{ include "technitium.fullname" . }}-cluster-join` will run the API
    call to {{ if .Values.cluster.primaryReleaseName }}join the cluster as a secondary{{ else }}initialize the cluster{{ end }}.
