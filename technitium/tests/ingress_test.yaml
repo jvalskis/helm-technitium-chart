@@ -1,0 +1,118 @@
+# MIT License
+#
+# Copyright (c) 2026 Shane & Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+suite: ingress backend routing
+templates:
+  - ingress.yaml
+release:
+  name: dns
+  namespace: test
+tests:
+  - it: remains disabled by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: keeps standalone ingress on the web Service
+    set:
+      ingress.enabled: true
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service
+          value:
+            name: dns-technitium-web
+            port:
+              number: 5380
+
+  - it: keeps independently released cluster members on their web Service
+    values:
+      - ../ci/cluster-secondary.yaml
+    set:
+      ingress.enabled: true
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: dns-technitium-web
+
+  - it: routes managed ingress through the observed primary
+    values:
+      - ../ci/cluster-managed.yaml
+    set:
+      ingress.enabled: true
+      ingress.className: traefik
+      ingress.annotations:
+        traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      ingress.tls:
+        - secretName: admin-tls
+          hosts: [admin.example.com]
+      ingress.hosts:
+        - host: admin.example.com
+          paths:
+            - path: /
+              pathType: Prefix
+              port: 5380
+    asserts:
+      - equal:
+          path: metadata.name
+          value: dns-technitium-web
+      - equal:
+          path: metadata.annotations["traefik.ingress.kubernetes.io/router.entrypoints"]
+          value: websecure
+      - equal:
+          path: spec.ingressClassName
+          value: traefik
+      - equal:
+          path: spec.tls[0].secretName
+          value: admin-tls
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service
+          value:
+            name: dns-technitium-web
+            port:
+              number: 5380
+
+  - it: respects managed fullname overrides and explicit backend ports
+    values:
+      - ../ci/cluster-managed.yaml
+    set:
+      fullnameOverride: custom-dns
+      ports.webHttp: 8080
+      ports.webHttps: 8443
+      ingress.enabled: true
+      ingress.hosts:
+        - host: admin.example.com
+          paths:
+            - path: /
+              port: 8080
+            - path: /secure
+              port: 8443
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service
+          value:
+            name: custom-dns-web
+            port:
+              number: 8080
+      - equal:
+          path: spec.rules[0].http.paths[1].backend.service
+          value:
+            name: custom-dns-web
+            port:
+              number: 8443

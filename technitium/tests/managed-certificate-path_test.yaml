@@ -1,0 +1,187 @@
+# MIT License
+#
+# Copyright (c) 2026 Shane & Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+suite: managed server certificate paths
+templates:
+  - statefulset-managed.yaml
+  - deployment.yaml
+release:
+  name: dns
+  namespace: test
+tests:
+  - it: derives a dedicated mount and nested item from the configured path
+    template: statefulset-managed.yaml
+    set: &certificate
+      cluster.enabled: true
+      cluster.managed.enabled: true
+      cluster.domain: cluster.example.test
+      cluster.podNetworks: [10.244.0.0/16]
+      cluster.autoHttps: false
+      config.webServiceEnableHttps: true
+      config.webServiceUseSelfSignedCert: false
+      config.webServiceTlsCertificatePath: /etc/technitium-tls/https/server.pfx
+      cluster.managed.tls.serverCertificate.secretName: cluster-server-tls
+      cluster.managed.tls.serverCertificate.key: keystore.p12
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PATH
+            value: /etc/technitium-tls/https/server.pfx
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: managed-server-tls
+            mountPath: /etc/technitium-tls
+            readOnly: true
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'managed-server-tls')].secret.items
+          value:
+            - key: keystore.p12
+              path: https/server.pfx
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == 'managed-server-tls')].subPath
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == 'managed-server-tls')].subPathExpr
+
+  - it: preserves the standalone PVC certificate default
+    template: deployment.yaml
+    set:
+      config.webServiceEnableHttps: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PATH
+            value: /etc/dns/tls/cert.pfx
+      - notExists:
+          path: spec.template.spec.volumes[?(@.name == 'managed-server-tls')]
+
+  - it: allows a nested mount inside the PVC with unrestricted names and extensions
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: /etc/dns/TLS files/.server/certificate.bundle
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PATH
+            value: /etc/dns/TLS files/.server/certificate.bundle
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == 'managed-server-tls')].mountPath
+          value: /etc/dns/TLS files
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'managed-server-tls')].secret.items[0].path
+          value: .server/certificate.bundle
+
+  - it: accepts redundant separators and current-directory components
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: /etc/technitium-tls//./https/cert.pfx
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_SERVER_WEB_SERVICE_TLS_CERTIFICATE_PATH
+            value: /etc/technitium-tls//./https/cert.pfx
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == 'managed-server-tls')].mountPath
+          value: /etc/technitium-tls
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'managed-server-tls')].secret.items[0].path
+          value: https/cert.pfx
+
+  - it: rejects an empty path
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: ""
+    asserts: &invalidPath
+      - failedTemplate:
+          errorMessage: config.webServiceTlsCertificatePath must be an absolute file path with at least two directories (for example /peer-tls/server/keystore.p12)
+
+  - it: rejects a null path
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: null
+    asserts: *invalidPath
+
+  - it: rejects a non-string path
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: 12
+    asserts: *invalidPath
+
+  - it: rejects a relative path
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: "tls/server/cert.pfx"
+    asserts: *invalidPath
+
+  - it: rejects a root-level file
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: "/cert.pfx"
+    asserts: *invalidPath
+
+  - it: rejects a flat layout
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: "/tls/cert.pfx"
+    asserts: *invalidPath
+
+  - it: rejects a directory path
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: "/tls/server/"
+    asserts: *invalidPath
+
+  - it: rejects a directory as the final component
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: "/tls/server/."
+    asserts: *invalidPath
+
+  - it: rejects parent traversal that could change the resolved mount location
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: /tls/../server/cert.pfx
+    asserts:
+      - failedTemplate:
+          errorMessage: config.webServiceTlsCertificatePath must not contain '..' components when projecting a Secret
+
+  - it: rejects a projected directory name reserved by Kubernetes
+    template: statefulset-managed.yaml
+    set:
+      <<: *certificate
+      config.webServiceTlsCertificatePath: /tls/..data/cert.pfx
+    asserts:
+      - failedTemplate:
+          errorMessage: config.webServiceTlsCertificatePath cannot project a directory beginning with '..' in a Secret volume
